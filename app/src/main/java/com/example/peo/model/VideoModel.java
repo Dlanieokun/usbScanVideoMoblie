@@ -6,7 +6,6 @@ public class VideoModel {
     private long lastModified;
     private String lastModifiedString;
 
-    // Updated Constructor
     public VideoModel(String path, String name, long lastModified, String lastModifiedString) {
         this.path = path;
         this.name = name;
