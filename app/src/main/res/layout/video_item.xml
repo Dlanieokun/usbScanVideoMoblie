@@ -26,14 +26,45 @@
             android:layout_height="wrap_content"
             android:text="Video Name"
             android:textSize="16dp"
-            android:paddingBottom="4dp"/>
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:paddingBottom="2dp"/>
+
+        <TextView
+            android:id="@+id/tvUploadStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: PENDING"
+            android:textSize="12dp"
+            android:paddingBottom="2dp"
+            android:textStyle="bold"
+            android:textColor="@android:color/black"/>
 
         <TextView
             android:id="@+id/tvVideoDate"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Date"
+            android:text="File Date: Date"
+            android:textSize="12dp"
+            android:textColor="@android:color/darker_gray"
+            android:paddingBottom="2dp"/>
+
+        <TextView
+            android:id="@+id/tvUploadCheckIn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Last Check-in: N/A"
             android:textSize="12dp"
             android:textColor="@android:color/darker_gray"/>
+
     </LinearLayout>
+
+    <ImageView
+        android:id="@+id/ivStatusIcon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_marginStart="12dp"
+        android:contentDescription="Upload Status"
+        android:src="@drawable/ic_pending" />
+
 </LinearLayout>

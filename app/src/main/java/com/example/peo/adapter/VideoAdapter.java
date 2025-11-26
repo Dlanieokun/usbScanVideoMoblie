@@ -40,12 +40,50 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         VideoModel video = list.get(position);
         holder.tvName.setText(video.getName());
-        holder.tvDate.setText(video.getLastModifiedString());
 
-        // Set default icon and start loading thumbnail in background
+        // 1. Load thumbnail
         holder.ivThumbnail.setImageResource(android.R.drawable.ic_menu_gallery);
         new ThumbnailLoaderTask(holder.ivThumbnail, video.getPath()).execute();
 
+        // 2. Set file date
+        holder.tvDate.setText("File Date: " + video.getLastModifiedString());
+
+        // 3. Display Upload Status and Check-in Time
+        String status = video.getStatus_upload(); // Retrieve status
+        String checkIn = video.getUpload_check_in(); // Retrieve check-in time
+
+        if (status != null) {
+            status = status.toUpperCase(); // Normalize status string
+        } else {
+            status = "PENDING";
+        }
+
+        holder.tvUploadStatus.setText("Status: " + status);
+
+        if (checkIn != null && !checkIn.isEmpty()) {
+            holder.tvUploadCheckIn.setText("Last Check-in: " + checkIn);
+        } else {
+            holder.tvUploadCheckIn.setText("Last Check-in: N/A");
+        }
+
+
+        // 4. Set upload status icon (UPDATED LOGIC)
+        if (status.equals("DONE") || status.equals("UPLOADED COMPLETE")) {
+            // Success
+            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
+            holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
+            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_green_dark));
+        } else if (status.equals("ERROR") || status.equals("FAILED") || status.equals("ALREADY UPLOADED")) {
+            // Error/Failure
+            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_red_dark));
+            holder.ivStatusIcon.setImageResource(R.drawable.ic_error);
+            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_red_dark));
+        } else {
+            // Pending, UPLOADING, or unknown status
+            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_blue_dark));
+            holder.ivStatusIcon.setImageResource(R.drawable.ic_pending);
+            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_blue_dark));
+        }
     }
 
     @Override
@@ -57,11 +95,20 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
         TextView tvName;
         TextView tvDate;
         ImageView ivThumbnail;
+        ImageView ivStatusIcon;
+        // NEW
+        TextView tvUploadStatus;
+        TextView tvUploadCheckIn;
+
         public ViewHolder(@NonNull View itemView) {
             super(itemView);
             tvName = itemView.findViewById(R.id.tvVideoName);
             tvDate = itemView.findViewById(R.id.tvVideoDate);
             ivThumbnail = itemView.findViewById(R.id.ivThumbnail);
+            ivStatusIcon = itemView.findViewById(R.id.ivStatusIcon);
+            // NEW
+            tvUploadStatus = itemView.findViewById(R.id.tvUploadStatus);
+            tvUploadCheckIn = itemView.findViewById(R.id.tvUploadCheckIn);
         }
     }
 
