@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">services.leyteprovince.gov.ph</domain>
+        <domain includeSubdomains="true">apps.leyteprovince.gov.ph</domain>
     </domain-config>
 </network-security-config>

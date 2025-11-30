@@ -37,12 +37,15 @@ import com.example.peo.adapter.VideoAdapter;
 import com.example.peo.model.VideoModel;
 // import com.example.peo.utility.FileUtils; // FileUtils is not directly used in the improved scan
 import com.example.peo.utility.FileUtils;
+import com.example.peo.utility.VolleyMultipartRequest;
 import com.example.peo.utility.VolleySingleton; // <-- Import the new VolleySingleton
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -55,10 +58,12 @@ import java.util.Set;
 
 public class HomeFragment extends Fragment {
 
-    // NOTE: Ensure your project has a working VolleySingleton class to execute requests.
-    // Replace 'VolleySingleton' with your actual class name if different.
+    // --- ADDED: Request identifier for Volley to allow cancellation ---
+    private static final String REQUEST_TAG = "VIDEO_UPLOAD_REQUEST";
+    // ------------------------------------------------------------------
 
-    final String base_url = "http://services.leyteprovince.gov.ph/gov_peo/index.php";
+//    final String base_url = "http://services.leyteprovince.gov.ph/gov_peo/index.php";
+    final String base_url = "http://apps.leyteprovince.gov.ph:70/gov_peo/index.php/";
     private static final String PREFS_NAME = "usb_prefs";
     private static final String KEY_PERSISTED_URIS = "persisted_uris";
 
@@ -69,9 +74,8 @@ public class HomeFragment extends Fragment {
     // --- NEW CONSTANTS FOR PROJECT SETTINGS (ProjectSettings) ---
     private static final String PREFS_NAME_SETTINGS = "ProjectSettings";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-//    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 1
-    private static final String KEY_CAMERA_1_ID = "camera2ID"; // Camera 2
-    private static final String CON_CAMERA = "camera 2";
+    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 2
+    private static final String CON_CAMERA = "camera 1";
     // ------------------------------------------
 
     private TextView tvStatus;
@@ -94,7 +98,7 @@ public class HomeFragment extends Fragment {
     String camera1Id;
     String projectId;
 
-    JSONArray jsonArrayCheck;
+    JSONArray jsonArrayCheck = new JSONArray();
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -215,7 +219,6 @@ public class HomeFragment extends Fragment {
             }
 
             if (tvSelectedFolder != null) {
-//                tvSelectedFolder.setText("\nCamera 1 Folder ID: " + camera1Id);
                 tvSelectedFolder.setText("\n"+CON_CAMERA+" Folder ID: " + camera1Id);
             }
         });
@@ -356,10 +359,10 @@ public class HomeFragment extends Fragment {
 
         // This setter does not require an Activity context, so it's safe to call.
         swipeRefreshLayout.setRefreshing(true);
+        List<VideoModel> tempVideoList = new ArrayList<>();
 
         new Thread(() -> {
 
-            List<VideoModel> tempVideoList = new ArrayList<>();
             Set<String> uriSet = getPersistedUris();
 
             Uri firstValidUri = null;
@@ -400,6 +403,7 @@ public class HomeFragment extends Fragment {
             // CRITICAL FIX: Ensure fragment is still attached before running UI updates
             if (isAdded()) {
                 requireActivity().runOnUiThread(() -> {
+                    // 1. UPDATE AND DISPLAY THE LIST
                     videoList.clear();
                     videoList.addAll(tempVideoList);
                     videoAdapter.notifyDataSetChanged();
@@ -408,11 +412,41 @@ public class HomeFragment extends Fragment {
                     // Show the button if no videos were found
                     updateUiStatus("Videos found: " + foundCount, showButton);
                     updateProjectAndFolderInfo(); // Update folder info after scan
+
+                    // 2. NOW INITIATE THE UPLOADS AFTER THE LIST IS VISIBLE
+                    for (VideoModel video: tempVideoList){
+                        // Check if the video is already uploaded before starting the upload
+                        if (!"ALREADY UPLOADED".equals(video.getStatus_upload())) {
+                            uploadVideoAsync(video);
+                        }
+                    }
                 });
             }
-
         }).start();
     }
+
+    private void uploadVideoAsync(VideoModel video) {
+        new Thread(() -> {
+            try {
+                // This part runs on a background thread
+                String base64 = FileUtils.convertUriToBase64(getContext(), Uri.parse(video.getPath()));
+
+                // Call the modified UploadVideo method, passing the video object itself
+                // This handles its own status updates on success/failure
+                UploadVideo("/Api/upload_time_lapse", base64, video.getName(), video);
+
+
+            } catch (Exception e) {
+                // Handle local errors (e.g., file not found, encoding failed)
+                video.setStatus_upload("UPLOAD FAILED: Local Processing Error");
+
+                requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
+
+                Log.e("UPLOAD", e.getMessage());
+            }
+        }).start();
+    }
+
 
     /** Scans a single folder recursively. Videos are added to the shared tempVideoList. */
     private void scanFolder(DocumentFile folder, List<VideoModel> tempVideoList) {
@@ -439,7 +473,7 @@ public class HomeFragment extends Fragment {
                                         file.getName(),
                                         lastModified,
                                         lastModifiedString,
-                                        cv.getString("folder_name"),
+                                        cv.getString("original_filename"),
                                         "ALREADY UPLOADED"
                                 ));
                                 flag = false;
@@ -447,18 +481,13 @@ public class HomeFragment extends Fragment {
                             }
                         }
                         if (flag) {
-
-                            // --- uploading -------------------------------------
-                             String base64String = FileUtils.convertUriToBase64(getContext(), file.getUri());
-                             UploadVideo("/Api/upload_time_lapse", base64String, file.getName());
-                            // ----------------------------------------------------
                             tempVideoList.add(new VideoModel(
                                     file.getUri().toString(),
                                     file.getName(),
                                     lastModified,
                                     lastModifiedString,
-                                    "camera 1",
-                                    "UPLOADED COMPLETE"
+                                    CON_CAMERA,
+                                    "PENDING" // Initial status before upload starts
                             ));
                         }
                     } catch (JSONException e) {
@@ -519,6 +548,14 @@ public class HomeFragment extends Fragment {
     @Override
     public void onDestroyView() {
         super.onDestroyView();
+
+        // --- ADDED: Cancel all pending Volley requests with the upload tag ---
+        if (isAdded() && REQUEST_TAG != null) {
+            VolleySingleton.getInstance(requireContext()).cancelPendingRequests(REQUEST_TAG);
+            Log.d("VOLLEY", "Cancelled pending upload requests with tag: " + REQUEST_TAG);
+        }
+        // ----------------------------------------------------------------------
+
         // Check if context is available before unregistering
         if (isAdded()) {
             if (usbStorageReceiver != null) {
@@ -574,8 +611,12 @@ public class HomeFragment extends Fragment {
     }
 
 
-    private void UploadVideo(String url, String base64, String file_name) {
+    private void UploadVideo(String url, String base64, String file_name, final VideoModel video) {
         if (!isAdded()) return; // Safety check before using context
+
+        video.setStatus_upload("UPLOADING");
+        // Update the UI on network error
+        requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
 
         String finalUrl = Uri.parse(base_url + url).toString();
         Log.d("VOLLEY", "Final URL: " + finalUrl);
@@ -585,9 +626,33 @@ public class HomeFragment extends Fragment {
                 finalUrl,
                 response -> {
                     Log.d("VOLLEY", "Response UPLOAD VIDEO : " + response);
+                    try {
+                        JSONObject jsonResponse = new JSONObject(response);
+                        // Check the "status" field in the server response
+                        String status = jsonResponse.optString("status", "error");
+
+                        if ("error".equalsIgnoreCase(status)) {
+                            // CONDITION MET: status is "error"
+                            video.setStatus_upload("UPLOAD FAILED");
+                            Toast.makeText(requireContext(), "Upload failed for " + file_name, Toast.LENGTH_SHORT).show();
+                        } else {
+                            // Status is "success" or any other successful status
+                            video.setStatus_upload("UPLOADING COMPLETE");
+                        }
+                    } catch (JSONException e) {
+                        // JSON parsing failed, treat as an error
+                        Log.e("VOLLEY", "JSON Parsing Error on Upload Response: " + e.getMessage());
+                        video.setStatus_upload("UPLOAD FAILED");
+                    }
+                    // Update the UI regardless of success or failure
+                    requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
                 },
                 error -> {
+                    // Volley network error
                     Log.e("VOLLEY", "Volley Error: " + error.toString());
+                    video.setStatus_upload("UPLOAD FAILED");
+                    // Update the UI on network error
+                    requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
                 }
         ){
             @Override
@@ -601,9 +666,71 @@ public class HomeFragment extends Fragment {
             }
         };
 
-        Volley.newRequestQueue(requireContext()).add(stringRequest);
+        // --- ADDED: Set the request tag ---
+        stringRequest.setTag(REQUEST_TAG);
+        // -----------------------------------
+
+        // 🚀 FIX: Use VolleySingleton for efficient queue management
+        VolleySingleton.getInstance(requireContext()).addToRequestQueue(stringRequest);
 
         Log.d("VOLLEY", "Request queued for Project ID: " + projectId);
     }
 
+    // NOTE: This other UploadVideo method is unused by your current flow, but is kept for completeness.
+    private void UploadVideos(String url, Uri fileUri) {
+
+        String finalUrl = base_url + url;
+
+        VolleyMultipartRequest multipartRequest =
+                new VolleyMultipartRequest(Request.Method.POST, finalUrl,
+                        response -> Log.d("UPLOAD", "Success: " + new String(response.data)),
+                        error -> Log.e("UPLOAD", "Error: " + error.toString())
+                ) {
+
+                    @Override
+                    protected Map<String, String> getParams() {
+                        Map<String, String> params = new HashMap<>();
+                        params.put("projectId", projectId + "");
+                        return params;
+                    }
+
+                    @Override
+                    protected Map<String, DataPart> getByteData() {
+                        Map<String, DataPart> params = new HashMap<>();
+
+                        byte[] videoBytes = convertUriToBytes(requireContext(), fileUri);
+
+                        params.put("video", new DataPart(
+                                "video.mp4",
+                                videoBytes,
+                                "video/mp4"
+                        ));
+
+                        return params;
+                    }
+                };
+
+        Volley.newRequestQueue(requireContext()).add(multipartRequest);
+    }
+
+    public static byte[] convertUriToBytes(Context context, Uri uri) {
+        try {
+            InputStream iStream = context.getContentResolver().openInputStream(uri);
+            ByteArrayOutputStream byteBuffer = new ByteArrayOutputStream();
+
+            int bufferSize = 1024;
+            byte[] buffer = new byte[bufferSize];
+
+            int len;
+            while ((len = iStream.read(buffer)) != -1) {
+                byteBuffer.write(buffer, 0, len);
+            }
+
+            return byteBuffer.toByteArray();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
 }

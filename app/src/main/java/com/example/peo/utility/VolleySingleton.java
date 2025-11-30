@@ -37,4 +37,13 @@ public class VolleySingleton {
     public <T> void addToRequestQueue(Request<T> req) {
         getRequestQueue().add(req);
     }
+
+    /**
+     * Cancels all requests in the queue that have the given tag.
+     */
+    public void cancelPendingRequests(Object tag) {
+        if (requestQueue != null) {
+            requestQueue.cancelAll(tag);
+        }
+    }
 }

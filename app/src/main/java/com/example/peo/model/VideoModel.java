@@ -24,6 +24,8 @@ public class VideoModel {
     public String getName() { return name; }
     public String getUpload_check_in() { return upload_check_in; }
     public String getStatus_upload() { return status_upload; }
+    public void setStatus_upload(String status_upload) { this.status_upload = status_upload; }
+
     public long getLastModified() { return lastModified; }
     public String getLastModifiedString() { return lastModifiedString; }
 }
