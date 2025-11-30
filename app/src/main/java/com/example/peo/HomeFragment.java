@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.content.SharedPreferences;
+import android.database.Cursor; // NEW: For reading file metadata from Uri
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
@@ -29,40 +30,52 @@ import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.android.volley.Request;
-import com.android.volley.toolbox.StringRequest;
-// NOTE: We will be using the VolleySingleton class, not direct Volley.newRequestQueue()
-import com.android.volley.toolbox.Volley;
+// --- OKHTTP Imports ---
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.FormBody;
+import okhttp3.MediaType; // NEW: For multipart content type
+import okhttp3.MultipartBody; // NEW: For file uploads
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
+import okio.BufferedSink; // NEW: For efficient stream writing
+import okio.Okio; // NEW: For stream utilities
+// --- END OKHTTP Imports ---
+
 import com.example.peo.adapter.VideoAdapter;
 import com.example.peo.model.VideoModel;
-// import com.example.peo.utility.FileUtils; // FileUtils is not directly used in the improved scan
 import com.example.peo.utility.FileUtils;
-import com.example.peo.utility.VolleyMultipartRequest;
-import com.example.peo.utility.VolleySingleton; // <-- Import the new VolleySingleton
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
+import java.io.IOException;
+import java.io.InputStream; // NEW: For reading file stream
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 public class HomeFragment extends Fragment {
 
-    // --- ADDED: Request identifier for Volley to allow cancellation ---
+    // --- OkHttp client and tag ---
+    private static final OkHttpClient client = new OkHttpClient.Builder()
+            .connectTimeout(60, TimeUnit.SECONDS) // Increased timeout for large video files
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build();
     private static final String REQUEST_TAG = "VIDEO_UPLOAD_REQUEST";
-    // ------------------------------------------------------------------
+    // ------------------------------------------
 
-//    final String base_url = "http://services.leyteprovince.gov.ph/gov_peo/index.php";
+    // FIX: Base URL ends with a slash (/)
     final String base_url = "http://apps.leyteprovince.gov.ph:70/gov_peo/index.php/";
     private static final String PREFS_NAME = "usb_prefs";
     private static final String KEY_PERSISTED_URIS = "persisted_uris";
@@ -163,6 +176,15 @@ public class HomeFragment extends Fragment {
         // Proceed with normal setup if the project name exists
         View view = inflater.inflate(R.layout.fragment_home, container, false);
 
+        SharedPreferences settingsPrefs = requireContext().getSharedPreferences(PREFS_NAME_SETTINGS, Context.MODE_PRIVATE);
+        projectId = settingsPrefs.getString(KEY_PROJECT_ID, "N/A"); // Load project ID here too
+        camera1Id = settingsPrefs.getString(KEY_CAMERA_1_ID, "Not Set");
+
+        // Load video already uploaded (Only run once on fragment creation)
+        if (!"N/A".equals(projectId)) {
+            loadVideoUploaded("/Api/getUploadedVideo", projectId);
+        }
+
         tvStatus = view.findViewById(R.id.tvStatus);
         tvProjectName = view.findViewById(R.id.tvProjectName);
         tvSelectedFolder = view.findViewById(R.id.tvSelectedFolder);
@@ -205,12 +227,7 @@ public class HomeFragment extends Fragment {
         projectId = settingsPrefs.getString(KEY_PROJECT_ID, "N/A");
         camera1Id = settingsPrefs.getString(KEY_CAMERA_1_ID, "Not Set");
 
-        Log.i("test", "Checking: " + projectId);
-        // Load video already uploaded
-        if (!"N/A".equals(projectId)) {
-            loadVideoUploaded("/Api/getUploadedVideo", projectId);
-        }
-
+        // NOTE: loadVideoUploaded is only called in onCreateView for initial data load.
 
         requireActivity().runOnUiThread(() -> {
             if (tvProjectName != null) {
@@ -429,18 +446,22 @@ public class HomeFragment extends Fragment {
         new Thread(() -> {
             try {
                 // This part runs on a background thread
-                String base64 = FileUtils.convertUriToBase64(getContext(), Uri.parse(video.getPath()));
+//                String base64 = FileUtils.convertUriToBase64(getContext(), Uri.parse(video.getPath()));
 
-                // Call the modified UploadVideo method, passing the video object itself
-                // This handles its own status updates on success/failure
-                UploadVideo("/Api/upload_time_lapse", base64, video.getName(), video);
-
+                // --- NEW: Test Upload Functionality (Commented out by default) ---
+                requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), "Running Upload...", Toast.LENGTH_SHORT).show());
+                TestUpload("/Api/upload_time_lapse_video", Uri.parse(video.getPath()), video);
+                // ------------------------------------------------------------------
 
             } catch (Exception e) {
                 // Handle local errors (e.g., file not found, encoding failed)
-                video.setStatus_upload("UPLOAD FAILED: Local Processing Error");
+                // ❌ FAILED - Local Processing Error
+                video.setStatus_upload("UPLOAD FAILED"); // Simplified error status
 
-                requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
+                int index = findVideoModelIndex(video.getPath());
+                if (index != -1) {
+                    requireActivity().runOnUiThread(() -> videoAdapter.notifyItemChanged(index));
+                }
 
                 Log.e("UPLOAD", e.getMessage());
             }
@@ -473,7 +494,7 @@ public class HomeFragment extends Fragment {
                                         file.getName(),
                                         lastModified,
                                         lastModifiedString,
-                                        cv.getString("original_filename"),
+                                        cv.getString("folder_name"),
                                         "ALREADY UPLOADED"
                                 ));
                                 flag = false;
@@ -491,7 +512,7 @@ public class HomeFragment extends Fragment {
                             ));
                         }
                     } catch (JSONException e) {
-                        Log.e("VOLLEY", "JSON Parsing Error: " + e.getMessage());
+                        Log.e("OKHTTP", "JSON Parsing Error: " + e.getMessage());
                     }
                 }
             }
@@ -545,14 +566,40 @@ public class HomeFragment extends Fragment {
         }
     }
 
+    /** Helper to find the index of a video model based on its path (URI) */
+    private int findVideoModelIndex(String path) {
+        for (int i = 0; i < videoList.size(); i++) {
+            if (videoList.get(i).getPath().equals(path)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Helper to get the current time formatted for check-in status */
+    private String getCurrentTime() {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+        return sdf.format(new Date());
+    }
+
     @Override
     public void onDestroyView() {
         super.onDestroyView();
 
-        // --- ADDED: Cancel all pending Volley requests with the upload tag ---
-        if (isAdded() && REQUEST_TAG != null) {
-            VolleySingleton.getInstance(requireContext()).cancelPendingRequests(REQUEST_TAG);
-            Log.d("VOLLEY", "Cancelled pending upload requests with tag: " + REQUEST_TAG);
+        // --- OKHTTP REPLACEMENT: Cancel all pending requests with the upload tag ---
+        if (isAdded()) {
+            // Iterate over the dispatcher's running and queued calls and cancel them
+            for (Call call : client.dispatcher().queuedCalls()) {
+                if (REQUEST_TAG.equals(call.request().tag())) {
+                    call.cancel();
+                }
+            }
+            for (Call call : client.dispatcher().runningCalls()) {
+                if (REQUEST_TAG.equals(call.request().tag())) {
+                    call.cancel();
+                }
+            }
+            Log.d("OKHTTP", "Cancelled pending upload requests with tag: " + REQUEST_TAG);
         }
         // ----------------------------------------------------------------------
 
@@ -575,162 +622,307 @@ public class HomeFragment extends Fragment {
         }
     }
 
+    /**
+     * OKHTTP REPLACEMENT for loadVideoUploaded (Volley StringRequest)
+     * Loads the list of already uploaded videos from the server.
+     */
     private void loadVideoUploaded(String url, String vId){
         if (!isAdded()) return; // Safety check before using context
 
-        String finalUrl = Uri.parse(base_url + url).toString();
-        Log.d("VOLLEY", "Final URL: " + finalUrl);
+        // FIX: Remove the leading slash from 'url' to prevent double slashes in the final path
+        String finalUrl = Uri.parse(base_url + url.substring(1)).toString();
+        Log.d("OKHTTP", "Final URL: " + finalUrl);
 
-        StringRequest stringRequest = new StringRequest(
-                Request.Method.POST,
-                finalUrl,
-                response -> {
-                    Log.d("VOLLEY", "Response: " + response);
-                    try {
-                        jsonArrayCheck = new JSONArray(response);
-                    } catch (JSONException e){
-                        Log.e("VOLLEY", "JSON Parsing Error: " + e.getMessage());
-                    }
-                },
-                error -> {
-                    Log.e("VOLLEY", "Volley Error: " + error.toString());
-                }
-        ){
+        // Build the POST request body
+        RequestBody requestBody = new FormBody.Builder()
+                .add("project_id", vId)
+                .build();
+
+        // Build the Request object
+        Request request = new Request.Builder()
+                .url(finalUrl)
+                .post(requestBody)
+                .build();
+
+        // Enqueue the request asynchronously
+        client.newCall(request).enqueue(new Callback() {
             @Override
-            protected Map<String, String> getParams() {
-                Map<String, String> params = new HashMap<>();
-                params.put("project_id", vId);
-                return params;
+            public void onFailure(Call call, IOException e) {
+                Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
+                // Handle network failure or request cancellation
             }
-        };
 
-        // 🚀 FIX: Use VolleySingleton for efficient queue management
-        VolleySingleton.getInstance(requireContext()).addToRequestQueue(stringRequest);
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                if (!response.isSuccessful()) {
+                    Log.e("OKHTTP", "Unexpected code " + response);
+                    return;
+                }
 
-        Log.d("VOLLEY", "Request queued for Project ID: " + vId);
+                try (ResponseBody responseBody = response.body()) {
+                    if (responseBody == null) return;
+                    String responseString = responseBody.string();
+                    Log.d("OKHTTP", "Response: " + responseString);
+
+                    try {
+                        // Response is expected to be a JSON Array
+                        jsonArrayCheck = new JSONArray(responseString);
+                    } catch (JSONException e){
+                        Log.e("OKHTTP", "JSON Parsing Error: " + e.getMessage());
+                    }
+                } finally {
+                    response.close();
+                }
+            }
+        });
+
+        Log.d("OKHTTP", "Request queued for Project ID: " + vId);
     }
 
 
+    /**
+     * OKHTTP REPLACEMENT for UploadVideo (Volley StringRequest)
+     * Uploads the video file (base64) to the server.
+     */
     private void UploadVideo(String url, String base64, String file_name, final VideoModel video) {
+        // This method is not used in the new file upload flow but is kept for context
         if (!isAdded()) return; // Safety check before using context
 
-        video.setStatus_upload("UPLOADING");
-        // Update the UI on network error
+        video.setStatus_upload("UPLOADING"); // Old status, kept for this unused method
+        // Update the UI
         requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
 
-        String finalUrl = Uri.parse(base_url + url).toString();
-        Log.d("VOLLEY", "Final URL: " + finalUrl);
+        // FIX: Remove the leading slash from 'url' to prevent double slashes in the final path
+        String finalUrl = Uri.parse(base_url + url.substring(1)).toString();
+        Log.d("OKHTTP", "Final URL: " + finalUrl);
 
-        StringRequest stringRequest = new StringRequest(
-                Request.Method.POST,
-                finalUrl,
-                response -> {
-                    Log.d("VOLLEY", "Response UPLOAD VIDEO : " + response);
+        // Build the POST request body (FormBody for form-encoded data)
+        RequestBody requestBody = new FormBody.Builder()
+                .add("camera_id", camera1Id)
+                .add("project_id", projectId)
+                .add("video_base64", base64)
+                // FIX: Added the missing 'video_filename' parameter back
+                .add("video_filename", file_name)
+                .build();
+
+        // Build the Request object
+        Request request = new Request.Builder()
+                .url(finalUrl)
+                .tag(REQUEST_TAG) // Tag for cancellation
+                .post(requestBody)
+                .build();
+
+        // Enqueue the request asynchronously
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                // Run on UI thread to update status
+                requireActivity().runOnUiThread(() -> {
+                    Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
+                    video.setStatus_upload("UPLOAD FAILED"); // Old status, kept for this unused method
+                    videoAdapter.notifyDataSetChanged();
+                });
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                try (okhttp3.ResponseBody responseBody = response.body()) {
+                    // Check for general HTTP error (e.g., 404, 500)
+                    if (!response.isSuccessful()) {
+                        Log.e("OKHTTP", "Unexpected code " + response);
+                        // Run on UI thread to update status
+                        requireActivity().runOnUiThread(() -> {
+                            // Changed status message to be less specific as 500 is now handled generically
+                            video.setStatus_upload("UPLOAD FAILED: HTTP Error " + response.code());
+                            videoAdapter.notifyDataSetChanged();
+                        });
+                        return;
+                    }
+
+                    if (responseBody == null) {
+                        Log.e("OKHTTP", "Empty response body");
+                        // Run on UI thread to update status
+                        requireActivity().runOnUiThread(() -> {
+                            video.setStatus_upload("UPLOAD FAILED: Empty Response"); // Old status, kept for this unused method
+                            videoAdapter.notifyDataSetChanged();
+                        });
+                        return;
+                    }
+
+                    String responseString = responseBody.string();
+                    Log.d("OKHTTP", "Response UPLOAD VIDEO : " + responseString);
+
                     try {
-                        JSONObject jsonResponse = new JSONObject(response);
+                        JSONObject jsonResponse = new JSONObject(responseString);
                         // Check the "status" field in the server response
                         String status = jsonResponse.optString("status", "error");
 
                         if ("error".equalsIgnoreCase(status)) {
                             // CONDITION MET: status is "error"
-                            video.setStatus_upload("UPLOAD FAILED");
-                            Toast.makeText(requireContext(), "Upload failed for " + file_name, Toast.LENGTH_SHORT).show();
+                            video.setStatus_upload("UPLOAD FAILED"); // Old status, kept for this unused method
+                            // Toast must run on main thread
+                            requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), "Upload failed for " + file_name, Toast.LENGTH_SHORT).show());
                         } else {
                             // Status is "success" or any other successful status
-                            video.setStatus_upload("UPLOADING COMPLETE");
+                            video.setStatus_upload("UPLOADING COMPLETE"); // Old status, kept for this unused method
                         }
                     } catch (JSONException e) {
                         // JSON parsing failed, treat as an error
-                        Log.e("VOLLEY", "JSON Parsing Error on Upload Response: " + e.getMessage());
-                        video.setStatus_upload("UPLOAD FAILED");
+                        Log.e("OKHTTP", "JSON Parsing Error on Upload Response: " + e.getMessage());
+                        video.setStatus_upload("UPLOAD FAILED"); // Old status, kept for this unused method
                     }
+                } finally {
+                    response.close();
                     // Update the UI regardless of success or failure
-                    requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
-                },
-                error -> {
-                    // Volley network error
-                    Log.e("VOLLEY", "Volley Error: " + error.toString());
-                    video.setStatus_upload("UPLOAD FAILED");
-                    // Update the UI on network error
-                    requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
+                    requireActivity().runOnUiThread(() -> {
+                        videoAdapter.notifyDataSetChanged();
+                    });
                 }
-        ){
+            }
+        });
+
+        Log.d("OKHTTP", "Request queued for Project ID: " + projectId);
+    }
+
+    /**
+     * OKHTTP IMPLEMENTATION for TestUpload (Multipart File Upload)
+     * Uploads the actual video file as multipart form data.
+     * Parameter name is "video".
+     */
+    private void TestUpload(String url, Uri videoUri, VideoModel video) {
+        if (!isAdded()) return;
+
+        // 1. URL Construction Fix
+        String finalUrl = Uri.parse(base_url + url.substring(1)).toString();
+        Log.d("OKHTTP", "Test Upload URL: " + finalUrl);
+
+        // 2. Get file metadata (filename and mimeType)
+        String fileName = video.getName(); // Use the name already extracted
+        String mimeType = "application/octet-stream";
+
+        try (Cursor cursor = requireContext().getContentResolver().query(videoUri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE);
+                if (mimeIndex != -1) {
+                    String extractedMimeType = cursor.getString(mimeIndex);
+                    // Use extracted mimeType only if it's available
+                    if (extractedMimeType != null && !extractedMimeType.isEmpty()) {
+                        mimeType = extractedMimeType;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e("OKHTTP", "Error getting file metadata: " + e.getMessage());
+            // ❌ FAILED - Metadata Error
+            video.setStatus_upload("UPLOAD FAILED");
+            int index = findVideoModelIndex(video.getPath());
+            if (index != -1) requireActivity().runOnUiThread(() -> videoAdapter.notifyItemChanged(index));
+            return; // Exit if file metadata retrieval fails
+        }
+
+        final String finalFileName = fileName;
+        final String finalMimeType = mimeType;
+
+        // 3. Create the RequestBody for the file stream
+        RequestBody fileRequestBody = new RequestBody() {
             @Override
-            protected Map<String, String> getParams() {
-                Map<String, String> params = new HashMap<>();
-                params.put("camera_id", camera1Id);
-                params.put("project_id", projectId);
-                params.put("video_base64", base64);
-                params.put("video_filename", file_name);
-                return params;
+            public MediaType contentType() {
+                // Use the determined MIME type
+                return MediaType.parse(finalMimeType);
+            }
+
+            @Override
+            public long contentLength() {
+                // Return -1 to signal unknown length, forcing streaming
+                return -1;
+            }
+
+            @Override
+            public void writeTo(BufferedSink sink) throws IOException {
+                try (InputStream inputStream = requireContext().getContentResolver().openInputStream(videoUri)) {
+                    if (inputStream == null) {
+                        throw new IOException("Cannot open InputStream for URI: " + videoUri);
+                    }
+                    // Use Okio to read from InputStream and write to the sink
+                    long bytesWritten = sink.writeAll(Okio.source(inputStream));
+                    Log.d("OKHTTP", "Bytes written for " + finalFileName + ": " + bytesWritten);
+                    // CRITICAL FIX: Removed incorrect status update from the successful stream write block.
+                } catch (Exception e) {
+                    // This block catches exceptions during the *streaming* of the file.
+                    Log.e("OKHTTP", "Error writing file to request body: " + e.getMessage());
+                    // ❌ FAILED - Stream Write Error: Must update model status for UI refresh
+                    // Note: The UI update must happen on the main thread, but this method is on OkHttp's thread.
+                    // The main onFailure will handle the final status. Setting the status here is a temporary step.
+                    video.setStatus_upload("UPLOAD FAILED");
+
+                    // Re-throw the IOException so OkHttp correctly treats this as a network failure
+                    throw new IOException("Failed to write file stream.", e);
+                }
             }
         };
 
-        // --- ADDED: Set the request tag ---
-        stringRequest.setTag(REQUEST_TAG);
-        // -----------------------------------
+        // 4. Construct the MultipartBody
+        RequestBody requestBody = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("camera_id", camera1Id)
+                .addFormDataPart("project_id", projectId)
+                .addFormDataPart("video", finalFileName, fileRequestBody)
+                .build();
 
-        // 🚀 FIX: Use VolleySingleton for efficient queue management
-        VolleySingleton.getInstance(requireContext()).addToRequestQueue(stringRequest);
+        // 5. Build the Request
+        Request request = new Request.Builder()
+                .url(finalUrl)
+                .tag(REQUEST_TAG)
+                .post(requestBody)
+                .build();
 
-        Log.d("VOLLEY", "Request queued for Project ID: " + projectId);
-    }
+        // Set status to UPLOADING before starting the call
+        // 🔄 UPLOADING
+        video.setStatus_upload("UPLOADING");
+        int index = findVideoModelIndex(video.getPath());
+        if (index != -1) requireActivity().runOnUiThread(() -> videoAdapter.notifyItemChanged(index));
 
-    // NOTE: This other UploadVideo method is unused by your current flow, but is kept for completeness.
-    private void UploadVideos(String url, Uri fileUri) {
-
-        String finalUrl = base_url + url;
-
-        VolleyMultipartRequest multipartRequest =
-                new VolleyMultipartRequest(Request.Method.POST, finalUrl,
-                        response -> Log.d("UPLOAD", "Success: " + new String(response.data)),
-                        error -> Log.e("UPLOAD", "Error: " + error.toString())
-                ) {
-
-                    @Override
-                    protected Map<String, String> getParams() {
-                        Map<String, String> params = new HashMap<>();
-                        params.put("projectId", projectId + "");
-                        return params;
-                    }
-
-                    @Override
-                    protected Map<String, DataPart> getByteData() {
-                        Map<String, DataPart> params = new HashMap<>();
-
-                        byte[] videoBytes = convertUriToBytes(requireContext(), fileUri);
-
-                        params.put("video", new DataPart(
-                                "video.mp4",
-                                videoBytes,
-                                "video/mp4"
-                        ));
-
-                        return params;
-                    }
-                };
-
-        Volley.newRequestQueue(requireContext()).add(multipartRequest);
-    }
-
-    public static byte[] convertUriToBytes(Context context, Uri uri) {
-        try {
-            InputStream iStream = context.getContentResolver().openInputStream(uri);
-            ByteArrayOutputStream byteBuffer = new ByteArrayOutputStream();
-
-            int bufferSize = 1024;
-            byte[] buffer = new byte[bufferSize];
-
-            int len;
-            while ((len = iStream.read(buffer)) != -1) {
-                byteBuffer.write(buffer, 0, len);
+        // 6. Enqueue the request
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                // ❌ FAILED - Network Error
+                requireActivity().runOnUiThread(() -> {
+                    Log.e("OKHTTP", "Test Upload Failed: " + e.getMessage());
+                    video.setStatus_upload("UPLOAD FAILED");
+                    int index = findVideoModelIndex(video.getPath());
+                    if (index != -1) videoAdapter.notifyItemChanged(index);
+                    Toast.makeText(requireContext(), "Test Upload Failed for " + finalFileName + " (Network)", Toast.LENGTH_LONG).show();
+                });
             }
 
-            return byteBuffer.toByteArray();
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                try (ResponseBody responseBody = response.body()) {
+                    final String responseString = (responseBody != null) ? responseBody.string() : "Empty Response";
+                    Log.d("OKHTTP", "Response TEST UPLOAD: " + response.code() + " - " + responseString);
 
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
-        }
+                    requireActivity().runOnUiThread(() -> {
+                        int index = findVideoModelIndex(video.getPath());
+
+                        if (response.isSuccessful()) {
+                            // ✅ SUCCESS
+                            video.setStatus_upload("UPLOAD COMPLETE");
+                        } else {
+                            // ❌ FAILED - HTTP Error
+                            video.setStatus_upload("UPLOAD FAILED");
+                        }
+
+                        if (index != -1) videoAdapter.notifyItemChanged(index);
+
+                        String statusMsg = response.isSuccessful() ? "Test Upload Success!" : "Test Upload Failed: HTTP " + response.code();
+                        String toastText = statusMsg + " | " + responseString.substring(0, Math.min(responseString.length(), 100)) + "...";
+                        Toast.makeText(requireContext(), toastText, Toast.LENGTH_LONG).show();
+                    });
+                } finally {
+                    response.close();
+                }
+            }
+        });
     }
 }

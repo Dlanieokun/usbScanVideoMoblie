@@ -18,25 +18,30 @@ import android.widget.ProgressBar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.textfield.TextInputLayout;
 
-import com.android.volley.Request;
-import com.android.volley.toolbox.StringRequest;
-import com.android.volley.toolbox.Volley;
-import com.android.volley.RequestQueue;
+// --- ADDED OkHttp Imports ---
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.FormBody;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
+import java.io.IOException;
+
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 // Assuming MainActivity, HomeFragment, and R.layout.fragment_setting are defined elsewhere
 public class SettingFragment extends Fragment {
 
     // NOTE: For production use, define base_url in a constants file or strings.xml
-    final String base_url = "http://services.leyteprovince.gov.ph/gov_peo/index.php";
+    final String base_url = "http://apps.leyteprovince.gov.ph:70/gov_peo/index.php/";
 
     private AutoCompleteTextView projectDropdown;
     private MaterialButton configButton;
@@ -53,7 +58,7 @@ public class SettingFragment extends Fragment {
     private static final String PREF_NAME = "ProjectSettings";
     private static final String KEY_PROJECT_NAME = "selected_project_name";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-//    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 1
+    //    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 1
     private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 2
     private static final String CON_CAMERA = "camera 1";
 
@@ -61,8 +66,8 @@ public class SettingFragment extends Fragment {
     private static final String APP_PREFS_FILE = "app_local_data";
     private static final String PROJECT_NAME_KEY = "name_of_project";
 
-    // RequestQueue instance (Better practice: initialize this once in Application class or a Singleton)
-    private RequestQueue requestQueue;
+    // OkHttp Client instance (Replaces Volley RequestQueue)
+    private OkHttpClient okHttpClient;
 
 
     /**
@@ -81,10 +86,9 @@ public class SettingFragment extends Fragment {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // Initialize Volley RequestQueue once the Fragment is created
-        if (isAdded()) {
-            requestQueue = Volley.newRequestQueue(requireContext());
-        }
+        // Initialize OkHttpClient
+        // Best practice: Reuse a single OkHttpClient instance throughout your app.
+        okHttpClient = new OkHttpClient();
     }
 
     @Override
@@ -275,13 +279,13 @@ public class SettingFragment extends Fragment {
     private void populateSpinner(String response) {
         // FIX 4: Ensure fragment is attached before calling requireContext()
         if (!isAdded()) {
-            Log.w("VOLLEY", "Fragment not attached. Skipping UI update in populateSpinner.");
+            Log.w("OKHTTP", "Fragment not attached. Skipping UI update in populateSpinner.");
             return;
         }
 
         // Do not populate spinner if a project is already configured
         if (getSavedProjectName() != null) {
-            Log.d("VOLLEY", "Project already configured. Skipping spinner population.");
+            Log.d("OKHTTP", "Project already configured. Skipping spinner population.");
             return;
         }
 
@@ -309,7 +313,7 @@ public class SettingFragment extends Fragment {
                 projectList.add(new ProjectItem(projectId, projectName));
             }
         } catch (JSONException e) {
-            Log.e("VOLLEY", "JSON Parsing Error: " + e.getMessage());
+            Log.e("OKHTTP", "JSON Parsing Error: " + e.getMessage());
             // Add error message to list if parsing fails
             projectNames.add("Error loading projects");
         }
@@ -334,34 +338,70 @@ public class SettingFragment extends Fragment {
     public void processAllProject(final String url) {
         // Check if already configured before making API call
         if (getSavedProjectName() != null) {
-            Log.d("VOLLEY", "Project already configured. Skipping project list API call.");
+            Log.d("OKHTTP", "Project already configured. Skipping project list API call.");
+            return;
+        }
+
+        // Ensure client is initialized
+        if (okHttpClient == null) {
+            Log.e("OKHTTP", "OkHttpClient is null. Cannot proceed.");
             return;
         }
 
         String finalUrl = Uri.parse(base_url + url).toString();
-        Log.d("VOLLEY", "Final URL: " + finalUrl);
+        Log.d("OKHTTP", "Final URL: " + finalUrl);
 
-        StringRequest stringRequest = new StringRequest(
-                Request.Method.POST,
-                finalUrl,
-                response -> {
-                    Log.d("VOLLEY", "Response: " + response);
-                    populateSpinner(response);
-                },
-                error -> {
-                    Log.e("VOLLEY", "Volley Error: " + error.toString());
-                    // Handle error by updating the dropdown with an error message
-                    populateSpinner("[]");
+        // Replaced Volley POST without body with OkHttp POST with an empty FormBody
+        RequestBody requestBody = new FormBody.Builder().build();
+
+        Request request = new Request.Builder()
+                .url(finalUrl)
+                .post(requestBody)
+                .build();
+
+        okHttpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
+                // Handle error on the main thread
+                if (isAdded()) {
+                    requireActivity().runOnUiThread(() -> populateSpinner("[]"));
                 }
-        );
+            }
 
-        // FIX 5 & Refinement: Ensure context/queue is available before queuing the request
-        if (isAdded() && requestQueue != null) {
-            requestQueue.add(stringRequest);
-        } else if (isAdded() && requestQueue == null) {
-            // Fallback for cases where onCreate didn't run or failed
-            Volley.newRequestQueue(requireContext()).add(stringRequest);
-        }
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                if (!response.isSuccessful()) {
+                    Log.e("OKHTTP", "Unsuccessful response code: " + response.code());
+                    // Treat as failure
+                    if (isAdded()) {
+                        requireActivity().runOnUiThread(() -> populateSpinner("[]"));
+                    }
+                    // Close response body on failure
+                    if (response.body() != null) {
+                        response.body().close();
+                    }
+                    return;
+                }
+
+                try (ResponseBody responseBody = response.body()) {
+                    if (responseBody == null) {
+                        Log.e("OKHTTP", "Response body is null.");
+                        if (isAdded()) {
+                            requireActivity().runOnUiThread(() -> populateSpinner("[]"));
+                        }
+                        return;
+                    }
+                    final String responseData = responseBody.string();
+                    Log.d("OKHTTP", "Response: " + responseData);
+
+                    // Update UI on the main thread
+                    if (isAdded()) {
+                        requireActivity().runOnUiThread(() -> populateSpinner(responseData));
+                    }
+                }
+            }
+        });
     }
 
     private void saveProjectFolder(final String url, String id) {
@@ -371,86 +411,129 @@ public class SettingFragment extends Fragment {
         }
 
         String finalUrl = base_url + "/" + path;
-        Log.d("VOLLEY", "Attempting Final Folder URL: " + finalUrl);
+        Log.d("OKHTTP", "Attempting Final Folder URL: " + finalUrl);
 
-        StringRequest stringRequest = new StringRequest(
-                Request.Method.POST,
-                finalUrl,
-                response -> {
-                    Log.d("VOLLEY", "Response in Folder: " + response);
+        // Ensure client is initialized
+        if (okHttpClient == null) {
+            Log.e("OKHTTP", "OkHttpClient is null. Cannot proceed.");
+            hideLoadingState("CONFIG");
+            if (isAdded()) {
+                Toast.makeText(requireContext(), "Internal error: OkHttpClient not initialized.", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
 
-                    // CRITICAL CRASH FIX: Check for fragment attachment
-                    if (!isAdded()) {
-                        Log.w("VOLLEY", "Fragment detached. Skipping folder save on response.");
+        // Volley's getParams() maps directly to OkHttp's FormBody for POST
+        RequestBody formBody = new FormBody.Builder()
+                .add("project_id", id)
+                .build();
+
+        Request request = new Request.Builder()
+                .url(finalUrl)
+                .post(formBody)
+                .build();
+
+        okHttpClient.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                Log.e("OKHTTP", "OkHttp Error in Folder API: " + e.getMessage());
+                if (isAdded()) {
+                    // Update UI on the main thread
+                    requireActivity().runOnUiThread(() -> {
+                        Toast.makeText(requireContext(), "Failed to retrieve folder details from server.", Toast.LENGTH_LONG).show();
+                        hideLoadingState("CONFIG");
+                    });
+                }
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                // CRITICAL CRASH FIX: Check for fragment attachment
+                if (!isAdded()) {
+                    Log.w("OKHTTP", "Fragment detached. Skipping folder save on response.");
+                    return;
+                }
+
+                if (!response.isSuccessful()) {
+                    Log.e("OKHTTP", "Unsuccessful folder response code: " + response.code());
+                    if (isAdded()) {
+                        // Update UI on the main thread
+                        requireActivity().runOnUiThread(() -> {
+                            Toast.makeText(requireContext(), "Server error retrieving folder details.", Toast.LENGTH_LONG).show();
+                            hideLoadingState("CONFIG");
+                        });
+                    }
+                    // Close response body on failure
+                    if (response.body() != null) {
+                        response.body().close();
+                    }
+                    return;
+                }
+
+                String responseData;
+                try (ResponseBody responseBody = response.body()) {
+                    if (responseBody == null) {
+                        Log.e("OKHTTP", "Folder Response body is null.");
+                        if (isAdded()) {
+                            requireActivity().runOnUiThread(() -> {
+                                Toast.makeText(requireContext(), "Empty response from server.", Toast.LENGTH_LONG).show();
+                                hideLoadingState("CONFIG");
+                            });
+                        }
                         return;
                     }
-
-                    try {
-                        JSONArray jsonArray = new JSONArray(response);
-
-                        SharedPreferences sharedPref = requireContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
-                        SharedPreferences.Editor editor = sharedPref.edit();
-                        boolean foundCamera = false;
-
-                        // Iterate to find the "camera 1" folder ID
-                        for (int i = 0; i < jsonArray.length(); i++) {
-                            JSONObject folder = jsonArray.getJSONObject(i);
-                            String folderName = folder.getString("folder_name");
-
-                            if (CON_CAMERA.equalsIgnoreCase(folderName)) {
-                                String folderId = folder.getString("id");
-                                editor.putString(KEY_CAMERA_1_ID, folderId);
-                                editor.apply();
-                                Log.d("CAMERA_SAVE", "Found '"+CON_CAMERA+"' folder. ID saved: " + folderId + " to " + KEY_CAMERA_1_ID);
-                                foundCamera = true;
-                                break; // Stop looping once found
-                            }
-                        }
-
-                        // After API call, check if configuration is complete and update UI
-                        if (foundCamera) {
-                            Toast.makeText(requireContext(), "Project configured successfully!", Toast.LENGTH_LONG).show();
-                        } else {
-                            Toast.makeText(requireContext(), "Error: '"+CON_CAMERA+"' folder ID not found.", Toast.LENGTH_LONG).show();
-                        }
-
-                        // Always hide loading state on completion of the second API call
-                        hideLoadingState("CONFIG");
-
-                        // This call now relies on KEY_CAMERA_1_ID being set
-                        checkAndSetUI();
-
-                    } catch (JSONException e) {
-                        Log.e("VOLLEY", "Folder JSON Parsing Error: " + e.getMessage());
-                        Toast.makeText(requireContext(), "Error parsing folder details.", Toast.LENGTH_LONG).show();
-                        // Hide loading state on JSON error
-                        hideLoadingState("CONFIG");
-                    }
-
-                },
-                error -> {
-                    Log.e("VOLLEY", "Volley Error in Folder API: " + error.toString());
-                    if (isAdded()) {
-                        Toast.makeText(requireContext(), "Failed to retrieve folder details from server.", Toast.LENGTH_LONG).show();
-                        // Hide loading state on Volley error
-                        hideLoadingState("CONFIG");
-                    }
+                    responseData = responseBody.string();
+                    Log.d("OKHTTP", "Response in Folder: " + responseData);
                 }
-        ) {
-            @Override
-            protected Map<String, String> getParams() {
-                Map<String, String> params = new HashMap<>();
-                params.put("project_id", id);
-                return params;
-            }
-        };
 
-        if (isAdded() && requestQueue != null) {
-            requestQueue.add(stringRequest);
-        } else if (isAdded() && requestQueue == null) {
-            // Fallback
-            Volley.newRequestQueue(requireContext()).add(stringRequest);
-        }
+                // Process JSON and update UI on the main thread
+                if (isAdded()) {
+                    requireActivity().runOnUiThread(() -> {
+                        try {
+                            JSONArray jsonArray = new JSONArray(responseData);
+
+                            SharedPreferences sharedPref = requireContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+                            SharedPreferences.Editor editor = sharedPref.edit();
+                            boolean foundCamera = false;
+
+                            // Iterate to find the "camera 1" folder ID
+                            for (int i = 0; i < jsonArray.length(); i++) {
+                                JSONObject folder = jsonArray.getJSONObject(i);
+                                String folderName = folder.getString("folder_name");
+
+                                if (CON_CAMERA.equalsIgnoreCase(folderName)) {
+                                    String folderId = folder.getString("id");
+                                    editor.putString(KEY_CAMERA_1_ID, folderId);
+                                    editor.apply();
+                                    Log.d("CAMERA_SAVE", "Found '"+CON_CAMERA+"' folder. ID saved: " + folderId + " to " + KEY_CAMERA_1_ID);
+                                    foundCamera = true;
+                                    break; // Stop looping once found
+                                }
+                            }
+
+                            // After API call, check if configuration is complete and update UI
+                            if (foundCamera) {
+                                Toast.makeText(requireContext(), "Project configured successfully!", Toast.LENGTH_LONG).show();
+                            } else {
+                                Toast.makeText(requireContext(), "Error: '"+CON_CAMERA+"' folder ID not found.", Toast.LENGTH_LONG).show();
+                            }
+
+                            // Always hide loading state on completion of the second API call
+                            hideLoadingState("CONFIG");
+
+                            // This call now relies on KEY_CAMERA_1_ID being set
+                            checkAndSetUI();
+
+                        } catch (JSONException e) {
+                            Log.e("OKHTTP", "Folder JSON Parsing Error: " + e.getMessage());
+                            Toast.makeText(requireContext(), "Error parsing folder details.", Toast.LENGTH_LONG).show();
+                            // Hide loading state on JSON error
+                            hideLoadingState("CONFIG");
+                        }
+                    });
+                }
+            }
+        });
     }
 
 }

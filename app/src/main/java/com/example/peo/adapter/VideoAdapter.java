@@ -68,7 +68,8 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
 
 
         // 4. Set upload status icon (UPDATED LOGIC)
-        if (status.equals("DONE") || status.equals("UPLOADING COMPLETE")) {
+        // FIX: Added "UPLOAD COMPLETE" for consistency with the new TestUpload method
+        if (status.equals("DONE") || status.equals("UPLOADING COMPLETE") || status.equals("UPLOAD COMPLETE")) {
             // Success
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
             holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
@@ -78,10 +79,10 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_red_dark));
             holder.ivStatusIcon.setImageResource(R.drawable.ic_error);
             holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_red_dark));
-        } else if (status.equals("UPLOADING")) { // <-- NEW CONDITION ADDED HERE
+        } else if (status.equals("UPLOADING")) {
             // Actively Uploading
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_orange_dark));
-            holder.ivStatusIcon.setImageResource(R.drawable.ic_uploading); // Assuming you have an 'ic_uploading' drawable
+            holder.ivStatusIcon.setImageResource(R.drawable.ic_uploading);
             holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_orange_dark));
         } else if (status.equals("PENDING")) {
             // Pending or unknown status
