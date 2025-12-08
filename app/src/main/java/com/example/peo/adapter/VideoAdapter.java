@@ -74,11 +74,6 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
             holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
             holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_green_dark));
-        } else if (status.equals("ERROR") || status.equals("UPLOAD FAILED") || status.equals("ALREADY UPLOADED")) {
-            // Error/Failure
-            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_red_dark));
-            holder.ivStatusIcon.setImageResource(R.drawable.ic_error);
-            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_red_dark));
         } else if (status.equals("UPLOADING")) {
             // Actively Uploading
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_orange_dark));
@@ -89,6 +84,11 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_blue_dark));
             holder.ivStatusIcon.setImageResource(R.drawable.ic_pending);
             holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_blue_dark));
+        } else {
+            // Error/Failure
+            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_red_dark));
+            holder.ivStatusIcon.setImageResource(R.drawable.ic_error);
+            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_red_dark));
         }
     }
 

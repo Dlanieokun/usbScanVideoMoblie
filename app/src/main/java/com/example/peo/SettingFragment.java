@@ -59,8 +59,8 @@ public class SettingFragment extends Fragment {
     private static final String KEY_PROJECT_NAME = "selected_project_name";
     private static final String KEY_PROJECT_ID = "selected_project_id";
     //    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 1
-    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 2
-    private static final String CON_CAMERA = "camera 1";
+    private static final String KEY_CAMERA_1_ID = "camera5ID"; // Camera 2
+    private static final String CON_CAMERA = "camera 5";
 
     // Constants for the project check file (used by MainActivity and HomeFragment)
     private static final String APP_PREFS_FILE = "app_local_data";

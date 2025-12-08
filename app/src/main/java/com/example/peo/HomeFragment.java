@@ -87,13 +87,14 @@ public class HomeFragment extends Fragment {
     // --- NEW CONSTANTS FOR PROJECT SETTINGS (ProjectSettings) ---
     private static final String PREFS_NAME_SETTINGS = "ProjectSettings";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 2
-    private static final String CON_CAMERA = "camera 1";
+    private static final String KEY_CAMERA_1_ID = "camera5ID";
+    private static final String CON_CAMERA = "camera 5";
     // ------------------------------------------
 
     private TextView tvStatus;
     private TextView tvProjectName;
     private TextView tvSelectedFolder;
+    private TextView tvError;
     private Button btnRequestUsb;
     private RecyclerView rvVideos;
     private SwipeRefreshLayout swipeRefreshLayout;
@@ -112,10 +113,12 @@ public class HomeFragment extends Fragment {
     String projectId;
 
     JSONArray jsonArrayCheck = new JSONArray();
+    List<VideoModel> checkUploadVideoList = new ArrayList<>();
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        updateProjectAndFolderInfo();
 
         // [Existing ContentObserver setup]
         fileChangeObserver = new ContentObserver(observerHandler) {
@@ -144,11 +147,10 @@ public class HomeFragment extends Fragment {
                                     treeUri,
                                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                             );
-
+//                            updateProjectAndFolderInfo();
                             savePersistedUri(treeUri);
+//                            loadVideoUploadeds("/Api/getUploadedVideo", projectId);
                             scanAllPersistedUris();
-                            // Update folder name display after a successful selection
-                            updateProjectAndFolderInfo();
                         }
                     } else {
                         // If access denied/canceled, button shows
@@ -157,6 +159,8 @@ public class HomeFragment extends Fragment {
                 }
         );
     }
+
+
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
@@ -176,18 +180,10 @@ public class HomeFragment extends Fragment {
         // Proceed with normal setup if the project name exists
         View view = inflater.inflate(R.layout.fragment_home, container, false);
 
-        SharedPreferences settingsPrefs = requireContext().getSharedPreferences(PREFS_NAME_SETTINGS, Context.MODE_PRIVATE);
-        projectId = settingsPrefs.getString(KEY_PROJECT_ID, "N/A"); // Load project ID here too
-        camera1Id = settingsPrefs.getString(KEY_CAMERA_1_ID, "Not Set");
-
-        // Load video already uploaded (Only run once on fragment creation)
-        if (!"N/A".equals(projectId)) {
-            loadVideoUploaded("/Api/getUploadedVideo", projectId);
-        }
-
         tvStatus = view.findViewById(R.id.tvStatus);
         tvProjectName = view.findViewById(R.id.tvProjectName);
         tvSelectedFolder = view.findViewById(R.id.tvSelectedFolder);
+        tvError = view.findViewById(R.id.tvError);
         rvVideos = view.findViewById(R.id.rvVideos);
         swipeRefreshLayout = view.findViewById(R.id.swipeRefreshLayout);
 
@@ -198,18 +194,34 @@ public class HomeFragment extends Fragment {
         btnRequestUsb = view.findViewById(R.id.btnRequestUsb);
         btnRequestUsb.setOnClickListener(v -> requestStorageAccess());
 
+
+
         swipeRefreshLayout.setOnRefreshListener(() -> {
-            if (!getPersistedUris().isEmpty()) {
-                scanAllPersistedUris();
-            } else {
-                swipeRefreshLayout.setRefreshing(false);
-                updateUiStatus("Cannot refresh. Please grant storage access first.", true);
+//            loadVideoUploadeds("/Api/getUploadedVideo", projectId);
+            if (isAdded()) {
+
+                requireActivity().runOnUiThread(() -> {
+
+                    if (!getPersistedUris().isEmpty()) {
+
+                        scanAllPersistedUris();
+
+                    } else {
+
+                        swipeRefreshLayout.setRefreshing(false);
+
+                        updateUiStatus("Cannot refresh. Please grant storage access first.", true);
+
+                    }
+
+                });
+
             }
         });
 
         registerUsbStorageReceiver();
-        checkExistingUris();
-        updateProjectAndFolderInfo(); // Call to update the new TextViews
+        checkExistingUris(); //
+        updateProjectAndFolderInfo();
 
         return view;
     }
@@ -227,7 +239,12 @@ public class HomeFragment extends Fragment {
         projectId = settingsPrefs.getString(KEY_PROJECT_ID, "N/A");
         camera1Id = settingsPrefs.getString(KEY_CAMERA_1_ID, "Not Set");
 
-        // NOTE: loadVideoUploaded is only called in onCreateView for initial data load.
+        Log.i("test", "Checking: " + projectId);
+        // Load video already uploaded
+        if (!"N/A".equals(projectId)) {
+            loadVideoUploaded("/Api/getUploadedVideo", projectId);
+        }
+
 
         requireActivity().runOnUiThread(() -> {
             if (tvProjectName != null) {
@@ -374,8 +391,13 @@ public class HomeFragment extends Fragment {
         // Hide button during scan (must be on main thread)
         updateUiStatus("Scanning storage devices...", false);
 
-        // This setter does not require an Activity context, so it's safe to call.
-        swipeRefreshLayout.setRefreshing(true);
+        // CRITICAL FIX: Ensure setRefreshing(true) is called on the Main Thread
+        if (isAdded()) {
+            requireActivity().runOnUiThread(() -> {
+                swipeRefreshLayout.setRefreshing(true); // ✅ FIXED: UI operation on Main Thread
+            });
+        }
+
         List<VideoModel> tempVideoList = new ArrayList<>();
 
         new Thread(() -> {
@@ -434,7 +456,17 @@ public class HomeFragment extends Fragment {
                     for (VideoModel video: tempVideoList){
                         // Check if the video is already uploaded before starting the upload
                         if (!"ALREADY UPLOADED".equals(video.getStatus_upload())) {
-                            uploadVideoAsync(video);
+                            if (checkUploadVideoList == null) {
+                                checkUploadVideoList = new ArrayList<>();
+                            }
+
+                            boolean exists = checkUploadVideoList.stream()
+                                    .anyMatch(v -> v.getName().equals(video.getName()));
+
+                            if (!exists) {
+                                checkUploadVideoList.add(video);
+                                uploadVideoAsync(video);
+                            }
                         }
                     }
                 });
@@ -446,23 +478,24 @@ public class HomeFragment extends Fragment {
         new Thread(() -> {
             try {
                 // This part runs on a background thread
-//                String base64 = FileUtils.convertUriToBase64(getContext(), Uri.parse(video.getPath()));
+                String base64 = FileUtils.convertUriToBase64(getContext(), Uri.parse(video.getPath()));
+
+                // Call the modified UploadVideo method, passing the video object itself
+                // This handles its own status updates on success/failure
+//                UploadVideo("/Api/upload_time_lapse", base64, video.getName(), video);
 
                 // --- NEW: Test Upload Functionality (Commented out by default) ---
                 requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), "Running Upload...", Toast.LENGTH_SHORT).show());
-                TestUpload("/Api/upload_time_lapse_video", Uri.parse(video.getPath()), video);
+                UploadTimeSlap("/Api/upload_time_lapse_video", Uri.parse(video.getPath()), video);
                 // ------------------------------------------------------------------
 
-            } catch (Exception e) {
-                // Handle local errors (e.g., file not found, encoding failed)
-                // ❌ FAILED - Local Processing Error
-                video.setStatus_upload("UPLOAD FAILED"); // Simplified error status
-
-                int index = findVideoModelIndex(video.getPath());
-                if (index != -1) {
-                    requireActivity().runOnUiThread(() -> videoAdapter.notifyItemChanged(index));
-                }
-
+            } catch (Exception e) {// Handle local errors (e.g., file not found, encoding failed)
+                String errorMsg = "UPLOAD FAILED: Local Processing Error. Message: " + e.getMessage();
+                video.setStatus_upload("UPLOAD FAILED: Local Processing Error");
+                requireActivity().runOnUiThread(() -> {
+                    videoAdapter.notifyDataSetChanged();
+                    updateErrorStatus("Error uploading " + video.getName() + ": Local processing failed."); // NEW: Put error in text field
+                });
                 Log.e("UPLOAD", e.getMessage());
             }
         }).start();
@@ -495,7 +528,7 @@ public class HomeFragment extends Fragment {
                                         lastModified,
                                         lastModifiedString,
                                         cv.getString("folder_name"),
-                                        "ALREADY UPLOADED"
+                                        "PENDING"
                                 ));
                                 flag = false;
                                 break;
@@ -561,25 +594,11 @@ public class HomeFragment extends Fragment {
                     if (btnRequestUsb != null) {
                         btnRequestUsb.setVisibility(showButton ? View.VISIBLE : View.GONE);
                     }
+                    // NEW: Clear any existing error message when a normal status is set
+                    updateErrorStatus(null);
                 }
             });
         }
-    }
-
-    /** Helper to find the index of a video model based on its path (URI) */
-    private int findVideoModelIndex(String path) {
-        for (int i = 0; i < videoList.size(); i++) {
-            if (videoList.get(i).getPath().equals(path)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /** Helper to get the current time formatted for check-in status */
-    private String getCurrentTime() {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
-        return sdf.format(new Date());
     }
 
     @Override
@@ -649,6 +668,7 @@ public class HomeFragment extends Fragment {
             @Override
             public void onFailure(Call call, IOException e) {
                 Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
+                updateErrorStatus("Network error during upload of : " + e.getMessage());
                 // Handle network failure or request cancellation
             }
 
@@ -679,17 +699,92 @@ public class HomeFragment extends Fragment {
         Log.d("OKHTTP", "Request queued for Project ID: " + vId);
     }
 
+    private void loadVideoUploadeds(String url, String vId){
+        if (!isAdded()) return; // Safety check before using context
+
+        // FIX: Remove the leading slash from 'url' to prevent double slashes in the final path
+        String finalUrl = Uri.parse(base_url + url.substring(1)).toString();
+        Log.d("OKHTTP", "Final URL: " + finalUrl);
+
+        // Build the POST request body
+        RequestBody requestBody = new FormBody.Builder()
+                .add("project_id", vId)
+                .build();
+
+        // Build the Request object
+        Request request = new Request.Builder()
+                .url(finalUrl)
+                .post(requestBody)
+                .build();
+
+        // Enqueue the request asynchronously
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
+                // Handle network failure or request cancellation
+                if (isAdded()) {
+                    requireActivity().runOnUiThread(() -> {
+                        swipeRefreshLayout.setRefreshing(false);
+                        Toast.makeText(requireContext(), "Network Error while fetching upload list.", Toast.LENGTH_SHORT).show();
+                    });
+                }
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                if (!response.isSuccessful()) {
+                    Log.e("OKHTTP", "Unexpected code " + response);
+                    if (isAdded()) {
+                        requireActivity().runOnUiThread(() -> swipeRefreshLayout.setRefreshing(false));
+                    }
+                    return;
+                }
+
+                try (ResponseBody responseBody = response.body()) {
+                    if (responseBody == null) return;
+                    String responseString = responseBody.string();
+                    Log.d("OKHTTP", "Response: " + responseString);
+
+                    try {
+                        // Response is expected to be a JSON Array
+                        jsonArrayCheck = new JSONArray(responseString);
+
+                        // CRITICAL FIX: Move the scan logic to the Main Thread
+                        if (isAdded()) {
+                            requireActivity().runOnUiThread(() -> {
+                                if (!getPersistedUris().isEmpty()) {
+                                    scanAllPersistedUris(); // ✅ Fixed: Called on Main Thread
+                                } else {
+                                    swipeRefreshLayout.setRefreshing(false);
+                                    updateUiStatus("Cannot refresh. Please grant storage access first.", true);
+                                }
+                            });
+                        }
+                    } catch (JSONException e){
+                        Log.e("OKHTTP", "JSON Parsing Error: " + e.getMessage());
+                        if (isAdded()) {
+                            requireActivity().runOnUiThread(() -> swipeRefreshLayout.setRefreshing(false));
+                        }
+                    }
+                } finally {
+                    response.close();
+                }
+            }
+        });
+
+        Log.d("OKHTTP", "Request queued for Project ID: " + vId);
+    }
+
 
     /**
      * OKHTTP REPLACEMENT for UploadVideo (Volley StringRequest)
      * Uploads the video file (base64) to the server.
      */
     private void UploadVideo(String url, String base64, String file_name, final VideoModel video) {
-        // This method is not used in the new file upload flow but is kept for context
         if (!isAdded()) return; // Safety check before using context
 
-        video.setStatus_upload("UPLOADING"); // Old status, kept for this unused method
-        // Update the UI
+        video.setStatus_upload("UPLOADING");
         requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
 
         // FIX: Remove the leading slash from 'url' to prevent double slashes in the final path
@@ -719,7 +814,7 @@ public class HomeFragment extends Fragment {
                 // Run on UI thread to update status
                 requireActivity().runOnUiThread(() -> {
                     Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
-                    video.setStatus_upload("UPLOAD FAILED"); // Old status, kept for this unused method
+                    video.setStatus_upload("UPLOAD FAILED");
                     videoAdapter.notifyDataSetChanged();
                 });
             }
@@ -743,7 +838,7 @@ public class HomeFragment extends Fragment {
                         Log.e("OKHTTP", "Empty response body");
                         // Run on UI thread to update status
                         requireActivity().runOnUiThread(() -> {
-                            video.setStatus_upload("UPLOAD FAILED: Empty Response"); // Old status, kept for this unused method
+                            video.setStatus_upload("UPLOAD FAILED: Empty Response");
                             videoAdapter.notifyDataSetChanged();
                         });
                         return;
@@ -759,24 +854,21 @@ public class HomeFragment extends Fragment {
 
                         if ("error".equalsIgnoreCase(status)) {
                             // CONDITION MET: status is "error"
-                            video.setStatus_upload("UPLOAD FAILED"); // Old status, kept for this unused method
-                            // Toast must run on main thread
+                            video.setStatus_upload("UPLOAD FAILED");
                             requireActivity().runOnUiThread(() -> Toast.makeText(requireContext(), "Upload failed for " + file_name, Toast.LENGTH_SHORT).show());
                         } else {
                             // Status is "success" or any other successful status
-                            video.setStatus_upload("UPLOADING COMPLETE"); // Old status, kept for this unused method
+                            video.setStatus_upload("UPLOADING COMPLETE");
                         }
                     } catch (JSONException e) {
                         // JSON parsing failed, treat as an error
                         Log.e("OKHTTP", "JSON Parsing Error on Upload Response: " + e.getMessage());
-                        video.setStatus_upload("UPLOAD FAILED"); // Old status, kept for this unused method
+                        video.setStatus_upload("UPLOAD FAILED");
                     }
                 } finally {
                     response.close();
                     // Update the UI regardless of success or failure
-                    requireActivity().runOnUiThread(() -> {
-                        videoAdapter.notifyDataSetChanged();
-                    });
+                    requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
                 }
             }
         });
@@ -789,39 +881,50 @@ public class HomeFragment extends Fragment {
      * Uploads the actual video file as multipart form data.
      * Parameter name is "video".
      */
-    private void TestUpload(String url, Uri videoUri, VideoModel video) {
+    private void UploadTimeSlap(String url, Uri videoUri,  final VideoModel video) {
         if (!isAdded()) return;
+
+        video.setStatus_upload("UPLOADING");
+        requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
 
         // 1. URL Construction Fix
         String finalUrl = Uri.parse(base_url + url.substring(1)).toString();
         Log.d("OKHTTP", "Test Upload URL: " + finalUrl);
 
         // 2. Get file metadata (filename and mimeType)
-        String fileName = video.getName(); // Use the name already extracted
+        String fileName = "video_file_" + System.currentTimeMillis() + ".mp4"; // Default fallback
         String mimeType = "application/octet-stream";
+        long fileSize = -1;
+        long lastModifiedTime = video.getLastModified();
 
         try (Cursor cursor = requireContext().getContentResolver().query(videoUri, null, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+                if (nameIndex != -1) {
+                    fileName = cursor.getString(nameIndex);
+                }
                 int mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE);
                 if (mimeIndex != -1) {
-                    String extractedMimeType = cursor.getString(mimeIndex);
-                    // Use extracted mimeType only if it's available
-                    if (extractedMimeType != null && !extractedMimeType.isEmpty()) {
-                        mimeType = extractedMimeType;
-                    }
+                    mimeType = cursor.getString(mimeIndex);
+                }
+                int sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE);
+                if (sizeIndex != -1) {
+                    fileSize = cursor.getLong(sizeIndex);
                 }
             }
         } catch (Exception e) {
             Log.e("OKHTTP", "Error getting file metadata: " + e.getMessage());
-            // ❌ FAILED - Metadata Error
-            video.setStatus_upload("UPLOAD FAILED");
-            int index = findVideoModelIndex(video.getPath());
-            if (index != -1) requireActivity().runOnUiThread(() -> videoAdapter.notifyItemChanged(index));
-            return; // Exit if file metadata retrieval fails
+            video.setStatus_upload("ERROR");
+            requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
+            updateErrorStatus("Error getting file metadata: " + e.getMessage());
         }
 
         final String finalFileName = fileName;
         final String finalMimeType = mimeType;
+        final long finalFileSize = fileSize;
+
+        SimpleDateFormat serverDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
+        String formattedDate = serverDateFormat.format(new Date(lastModifiedTime));
 
         // 3. Create the RequestBody for the file stream
         RequestBody fileRequestBody = new RequestBody() {
@@ -846,27 +949,25 @@ public class HomeFragment extends Fragment {
                     // Use Okio to read from InputStream and write to the sink
                     long bytesWritten = sink.writeAll(Okio.source(inputStream));
                     Log.d("OKHTTP", "Bytes written for " + finalFileName + ": " + bytesWritten);
-                    // CRITICAL FIX: Removed incorrect status update from the successful stream write block.
+//                    updateErrorStatus("Bytes written for " + finalFileName + ": " + bytesWritten);
                 } catch (Exception e) {
-                    // This block catches exceptions during the *streaming* of the file.
                     Log.e("OKHTTP", "Error writing file to request body: " + e.getMessage());
-                    // ❌ FAILED - Stream Write Error: Must update model status for UI refresh
-                    // Note: The UI update must happen on the main thread, but this method is on OkHttp's thread.
-                    // The main onFailure will handle the final status. Setting the status here is a temporary step.
-                    video.setStatus_upload("UPLOAD FAILED");
-
-                    // Re-throw the IOException so OkHttp correctly treats this as a network failure
+                    updateErrorStatus("Error writing file to request body: " + e.getMessage());
                     throw new IOException("Failed to write file stream.", e);
                 }
             }
         };
+        updateErrorStatus("video_date " + formattedDate);
+//        updateErrorStatus("video_size " + String.valueOf(finalFileSize));
 
         // 4. Construct the MultipartBody
         RequestBody requestBody = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("camera_id", camera1Id)
                 .addFormDataPart("project_id", projectId)
-                .addFormDataPart("video", finalFileName, fileRequestBody)
+                .addFormDataPart("video_date", formattedDate)
+                .addFormDataPart("video_size", String.valueOf(finalFileSize))
+                .addFormDataPart("video", finalFileName, fileRequestBody) // Parameter name is "video"
                 .build();
 
         // 5. Build the Request
@@ -876,23 +977,15 @@ public class HomeFragment extends Fragment {
                 .post(requestBody)
                 .build();
 
-        // Set status to UPLOADING before starting the call
-        // 🔄 UPLOADING
-        video.setStatus_upload("UPLOADING");
-        int index = findVideoModelIndex(video.getPath());
-        if (index != -1) requireActivity().runOnUiThread(() -> videoAdapter.notifyItemChanged(index));
-
         // 6. Enqueue the request
         client.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
-                // ❌ FAILED - Network Error
                 requireActivity().runOnUiThread(() -> {
                     Log.e("OKHTTP", "Test Upload Failed: " + e.getMessage());
-                    video.setStatus_upload("UPLOAD FAILED");
-                    int index = findVideoModelIndex(video.getPath());
-                    if (index != -1) videoAdapter.notifyItemChanged(index);
                     Toast.makeText(requireContext(), "Test Upload Failed for " + finalFileName + " (Network)", Toast.LENGTH_LONG).show();
+                    video.setStatus_upload("UPLOAD FAILED");
+                    videoAdapter.notifyDataSetChanged();
                 });
             }
 
@@ -900,23 +993,28 @@ public class HomeFragment extends Fragment {
             public void onResponse(Call call, Response response) throws IOException {
                 try (ResponseBody responseBody = response.body()) {
                     final String responseString = (responseBody != null) ? responseBody.string() : "Empty Response";
-                    Log.d("OKHTTP", "Response TEST UPLOAD: " + response.code() + " - " + responseString);
+                    Log.d("OKHTTP", "Response UPLOAD: " + response.code() + " - " + responseString);
 
                     requireActivity().runOnUiThread(() -> {
-                        int index = findVideoModelIndex(video.getPath());
+                        // 1. Determine status and construct the toast message
+                        String statusMsg = response.isSuccessful() ? "Test Upload Success!" : "Test Upload Failed: HTTP " + response.code();
+                        String responseExcerpt = responseString.substring(0, Math.min(responseString.length(), 100));
+                        String toastText = statusMsg + " | " + responseExcerpt + "...";
 
-                        if (response.isSuccessful()) {
-                            // ✅ SUCCESS
-                            video.setStatus_upload("UPLOAD COMPLETE");
+                        // 2. Update the video status based on the server's JSON response body
+                        // FIX: Check if the responseString (JSON body) contains the error message.
+                        if (responseString != null && responseString.contains("\"Video file already exists\"")) {
+                            video.setStatus_upload("ALREADY UPLOADED");
+                        } else if (responseString != null && responseString.contains("\"success\"")) {
+                            // This covers actual upload success and all other types of failures/messages.
+                            video.setStatus_upload("UPLOADING COMPLETE");
                         } else {
-                            // ❌ FAILED - HTTP Error
                             video.setStatus_upload("UPLOAD FAILED");
+                            updateErrorStatus(statusMsg);
                         }
 
-                        if (index != -1) videoAdapter.notifyItemChanged(index);
-
-                        String statusMsg = response.isSuccessful() ? "Test Upload Success!" : "Test Upload Failed: HTTP " + response.code();
-                        String toastText = statusMsg + " | " + responseString.substring(0, Math.min(responseString.length(), 100)) + "...";
+                        // 3. Update UI
+                        videoAdapter.notifyDataSetChanged();
                         Toast.makeText(requireContext(), toastText, Toast.LENGTH_LONG).show();
                     });
                 } finally {
@@ -925,4 +1023,17 @@ public class HomeFragment extends Fragment {
             }
         });
     }
+
+    private void updateErrorStatus(String msg) {
+        if (tvError != null && isAdded()) {
+            requireActivity().runOnUiThread(() -> {
+                if (tvError != null) {
+                    tvError.setText(msg);
+                    // Set visibility to VISIBLE only if there is an error message, otherwise GONE
+                    tvError.setVisibility(msg == null || msg.isEmpty() ? View.GONE : View.VISIBLE);
+                }
+            });
+        }
+    }
+
 }

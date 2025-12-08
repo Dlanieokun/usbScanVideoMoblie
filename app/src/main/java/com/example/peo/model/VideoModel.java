@@ -8,6 +8,7 @@ public class VideoModel {
 
     private String upload_check_in;
     private String status_upload;
+    private int uploadProgress = 0; // <<-- FIXED: ADDED FIELD
 
     public VideoModel(String path, String name, long lastModified, String lastModifiedString,
                       String upload_check_in, String status_upload) {
@@ -28,4 +29,8 @@ public class VideoModel {
 
     public long getLastModified() { return lastModified; }
     public String getLastModifiedString() { return lastModifiedString; }
+
+    // <<-- FIXED: ADDED GETTER AND SETTER
+    public int getUploadProgress() { return uploadProgress; }
+    public void setUploadProgress(int uploadProgress) { this.uploadProgress = uploadProgress; }
 }
