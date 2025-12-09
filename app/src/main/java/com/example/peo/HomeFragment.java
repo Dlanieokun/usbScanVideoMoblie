@@ -41,8 +41,11 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import okio.Buffer;
 import okio.BufferedSink; // NEW: For efficient stream writing
+import okio.ForwardingSink;
 import okio.Okio; // NEW: For stream utilities
+import okio.Sink;
 // --- END OKHTTP Imports ---
 
 import com.example.peo.adapter.VideoAdapter;
@@ -87,8 +90,8 @@ public class HomeFragment extends Fragment {
     // --- NEW CONSTANTS FOR PROJECT SETTINGS (ProjectSettings) ---
     private static final String PREFS_NAME_SETTINGS = "ProjectSettings";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-    private static final String KEY_CAMERA_1_ID = "camera5ID";
-    private static final String CON_CAMERA = "camera 5";
+    private static final String KEY_CAMERA_1_ID = "camera1ID";
+    private static final String CON_CAMERA = "camera 1";
     // ------------------------------------------
 
     private TextView tvStatus;
@@ -876,16 +879,80 @@ public class HomeFragment extends Fragment {
         Log.d("OKHTTP", "Request queued for Project ID: " + projectId);
     }
 
+    // for loading progress of uploading ===============================
+    private interface ProgressListener {
+        void onProgressUpdate(long bytesWritten, long contentLength);
+    }
+
+    private class ProgressRequestBody extends RequestBody {
+        private final RequestBody delegate;
+        private final ProgressListener listener;
+
+        public ProgressRequestBody(RequestBody delegate, ProgressListener listener) {
+            this.delegate = delegate;
+            this.listener = listener;
+        }
+
+        @Override
+        public MediaType contentType() {
+            return delegate.contentType();
+        }
+
+        @Override
+        public long contentLength() throws IOException {
+            return delegate.contentLength();
+        }
+
+        @Override
+        public void writeTo(BufferedSink sink) throws IOException {
+            CountingSink countingSink = new CountingSink(sink);
+            BufferedSink bufferedSink = Okio.buffer(countingSink);
+
+            delegate.writeTo(bufferedSink);
+
+            bufferedSink.flush();
+        }
+
+        private final class CountingSink extends ForwardingSink {
+            private long bytesWritten = 0;
+            private long lastReportedProgress = 0; // To reduce UI updates
+
+            public CountingSink(Sink delegate) {
+                super(delegate);
+            }
+
+            @Override
+            public void write(Buffer source, long byteCount) throws IOException {
+                super.write(source, byteCount);
+                bytesWritten += byteCount;
+
+                // Report progress only if it's significantly different to avoid spamming the UI thread
+                long progress = (100 * bytesWritten) / contentLength();
+
+                if (progress > lastReportedProgress) {
+                    // Throttle updates - only update UI on a 1% change
+                    if (progress % 1 == 0) {
+                        listener.onProgressUpdate(bytesWritten, contentLength());
+                        lastReportedProgress = progress;
+                    }
+                }
+            }
+        }
+    }
+    // Ending  =========================================================
+
     /**
-     * OKHTTP IMPLEMENTATION for TestUpload (Multipart File Upload)
+     * OKHTTP IMPLEMENTATION for Upload (Multipart File Upload)
      * Uploads the actual video file as multipart form data.
      * Parameter name is "video".
      */
     private void UploadTimeSlap(String url, Uri videoUri,  final VideoModel video) {
         if (!isAdded()) return;
 
+        // --- Start: Initial UI Update for Uploading Status ---
         video.setStatus_upload("UPLOADING");
         requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
+        // --- End: Initial UI Update for Uploading Status ---
 
         // 1. URL Construction Fix
         String finalUrl = Uri.parse(base_url + url.substring(1)).toString();
@@ -894,7 +961,7 @@ public class HomeFragment extends Fragment {
         // 2. Get file metadata (filename and mimeType)
         String fileName = "video_file_" + System.currentTimeMillis() + ".mp4"; // Default fallback
         String mimeType = "application/octet-stream";
-        long fileSize = -1;
+        long fileSize = -1; // CRITICAL: Need actual file size for percentage calculation
         long lastModifiedTime = video.getLastModified();
 
         try (Cursor cursor = requireContext().getContentResolver().query(videoUri, null, null, null, null)) {
@@ -913,31 +980,32 @@ public class HomeFragment extends Fragment {
                 }
             }
         } catch (Exception e) {
+            // ... (Error handling remains the same)
             Log.e("OKHTTP", "Error getting file metadata: " + e.getMessage());
             video.setStatus_upload("ERROR");
             requireActivity().runOnUiThread(() -> videoAdapter.notifyDataSetChanged());
             updateErrorStatus("Error getting file metadata: " + e.getMessage());
+            return; // Exit if file metadata retrieval fails
         }
 
         final String finalFileName = fileName;
         final String finalMimeType = mimeType;
-        final long finalFileSize = fileSize;
+        final long finalFileSize = fileSize; // Use the retrieved file size
 
         SimpleDateFormat serverDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault());
         String formattedDate = serverDateFormat.format(new Date(lastModifiedTime));
 
         // 3. Create the RequestBody for the file stream
-        RequestBody fileRequestBody = new RequestBody() {
+        RequestBody rawFileRequestBody = new RequestBody() {
             @Override
             public MediaType contentType() {
-                // Use the determined MIME type
                 return MediaType.parse(finalMimeType);
             }
 
             @Override
             public long contentLength() {
-                // Return -1 to signal unknown length, forcing streaming
-                return -1;
+                // Return actual file size
+                return finalFileSize;
             }
 
             @Override
@@ -949,7 +1017,6 @@ public class HomeFragment extends Fragment {
                     // Use Okio to read from InputStream and write to the sink
                     long bytesWritten = sink.writeAll(Okio.source(inputStream));
                     Log.d("OKHTTP", "Bytes written for " + finalFileName + ": " + bytesWritten);
-//                    updateErrorStatus("Bytes written for " + finalFileName + ": " + bytesWritten);
                 } catch (Exception e) {
                     Log.e("OKHTTP", "Error writing file to request body: " + e.getMessage());
                     updateErrorStatus("Error writing file to request body: " + e.getMessage());
@@ -957,8 +1024,31 @@ public class HomeFragment extends Fragment {
                 }
             }
         };
+
+        // --- NEW: Wrap the raw file RequestBody with ProgressRequestBody ---
+        ProgressListener progressListener = (bytesWritten, contentLength) -> {
+            // Calculate percentage
+            int progress = (contentLength > 0) ? (int) ((100 * bytesWritten) / contentLength) : 0;
+
+            // Update the VideoModel status and notify the adapter on the UI thread
+            if (isAdded()) {
+                requireActivity().runOnUiThread(() -> {
+                    // Update status to show percentage
+                    video.setStatus_upload("UPLOADING (" + progress + "%)");
+                    // Find the video's position to notify the adapter efficiently
+                    int position = videoList.indexOf(video);
+                    if (position != -1) {
+                        videoAdapter.notifyItemChanged(position);
+                    }
+                });
+            }
+        };
+
+        // The file part RequestBody that reports progress
+        RequestBody progressFileRequestBody = new ProgressRequestBody(rawFileRequestBody, progressListener);
+        // ------------------------------------------------------------------
+
         updateErrorStatus("video_date " + formattedDate);
-//        updateErrorStatus("video_size " + String.valueOf(finalFileSize));
 
         // 4. Construct the MultipartBody
         RequestBody requestBody = new MultipartBody.Builder()
@@ -967,7 +1057,9 @@ public class HomeFragment extends Fragment {
                 .addFormDataPart("project_id", projectId)
                 .addFormDataPart("video_date", formattedDate)
                 .addFormDataPart("video_size", String.valueOf(finalFileSize))
-                .addFormDataPart("video", finalFileName, fileRequestBody) // Parameter name is "video"
+                // --- NEW: Use the progress-tracking RequestBody ---
+                .addFormDataPart("video", finalFileName, progressFileRequestBody) // Parameter name is "video"
+                // ---------------------------------------------------
                 .build();
 
         // 5. Build the Request
@@ -981,10 +1073,12 @@ public class HomeFragment extends Fragment {
         client.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, IOException e) {
+                // ... (Failure logic remains the same)
                 requireActivity().runOnUiThread(() -> {
-                    Log.e("OKHTTP", "Test Upload Failed: " + e.getMessage());
-                    Toast.makeText(requireContext(), "Test Upload Failed for " + finalFileName + " (Network)", Toast.LENGTH_LONG).show();
+                    Log.e("OKHTTP", "Upload Failed: " + e.getMessage());
+                    Toast.makeText(requireContext(), "Upload Failed for " + finalFileName + " (Network)", Toast.LENGTH_LONG).show();
                     video.setStatus_upload("UPLOAD FAILED");
+                    // Use notifyDataSetChanged as a fallback for the end of upload
                     videoAdapter.notifyDataSetChanged();
                 });
             }
@@ -997,23 +1091,23 @@ public class HomeFragment extends Fragment {
 
                     requireActivity().runOnUiThread(() -> {
                         // 1. Determine status and construct the toast message
-                        String statusMsg = response.isSuccessful() ? "Test Upload Success!" : "Test Upload Failed: HTTP " + response.code();
+                        String statusMsg = response.isSuccessful() ? "Upload Success!" : "Upload Failed: HTTP " + response.code();
                         String responseExcerpt = responseString.substring(0, Math.min(responseString.length(), 100));
                         String toastText = statusMsg + " | " + responseExcerpt + "...";
 
                         // 2. Update the video status based on the server's JSON response body
-                        // FIX: Check if the responseString (JSON body) contains the error message.
                         if (responseString != null && responseString.contains("\"Video file already exists\"")) {
                             video.setStatus_upload("ALREADY UPLOADED");
                         } else if (responseString != null && responseString.contains("\"success\"")) {
-                            // This covers actual upload success and all other types of failures/messages.
-                            video.setStatus_upload("UPLOADING COMPLETE");
+                            // Final status when upload is complete
+                            video.setStatus_upload("UPLOAD COMPLETE");
                         } else {
                             video.setStatus_upload("UPLOAD FAILED");
                             updateErrorStatus(statusMsg);
                         }
 
                         // 3. Update UI
+                        // Use notifyDataSetChanged as a fallback for the end of upload
                         videoAdapter.notifyDataSetChanged();
                         Toast.makeText(requireContext(), toastText, Toast.LENGTH_LONG).show();
                     });

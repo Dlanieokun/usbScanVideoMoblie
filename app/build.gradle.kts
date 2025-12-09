@@ -9,7 +9,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.peo5"
+        applicationId = "com.example.peo"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

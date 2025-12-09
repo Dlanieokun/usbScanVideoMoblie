@@ -52,13 +52,20 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
         String status = video.getStatus_upload(); // Retrieve status
         String checkIn = video.getUpload_check_in(); // Retrieve check-in time
 
-        if (status != null) {
-            status = status.toUpperCase(); // Normalize status string
+        // --- NEW: Handle Uploading Percentage Status ---
+        String displayStatus = status;
+        boolean isUploadingWithProgress = false;
+        if (status.startsWith("UPLOADING (") && status.endsWith("%)")) {
+            displayStatus = status; // Show the percentage directly
+            isUploadingWithProgress = true;
+        } else if (status.equals("UPLOADING")) {
+            displayStatus = "Status: UPLOADING";
         } else {
-            status = "PENDING";
+            displayStatus = "Status: " + status;
         }
 
-        holder.tvUploadStatus.setText("Status: " + status);
+        holder.tvUploadStatus.setText(displayStatus);
+        // -----------------------------------------------
 
         if (checkIn != null && !checkIn.isEmpty()) {
             holder.tvUploadCheckIn.setText("Last Check-in: " + checkIn);
@@ -74,7 +81,7 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
             holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
             holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_green_dark));
-        } else if (status.equals("UPLOADING")) {
+        } else if (status.equals("UPLOADING") || isUploadingWithProgress) {
             // Actively Uploading
             holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_orange_dark));
             holder.ivStatusIcon.setImageResource(R.drawable.ic_uploading);
