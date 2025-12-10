@@ -5,32 +5,43 @@ public class VideoModel {
     private String name;
     private long lastModified;
     private String lastModifiedString;
-
-    private String upload_check_in;
+    private String camera;
     private String status_upload;
-    private int uploadProgress = 0; // <<-- FIXED: ADDED FIELD
 
-    public VideoModel(String path, String name, long lastModified, String lastModifiedString,
-                      String upload_check_in, String status_upload) {
+    public VideoModel(String path, String name, long lastModified, String lastModifiedString, String camera, String status_upload) {
         this.path = path;
         this.name = name;
         this.lastModified = lastModified;
         this.lastModifiedString = lastModifiedString;
-        this.upload_check_in = upload_check_in;
+        this.camera = camera;
         this.status_upload = status_upload;
     }
 
     // Getters
     public String getPath() { return path; }
     public String getName() { return name; }
-    public String getUpload_check_in() { return upload_check_in; }
-    public String getStatus_upload() { return status_upload; }
-    public void setStatus_upload(String status_upload) { this.status_upload = status_upload; }
-
     public long getLastModified() { return lastModified; }
+
+    // FIX: Added the missing getter method
     public String getLastModifiedString() { return lastModifiedString; }
 
-    // <<-- FIXED: ADDED GETTER AND SETTER
-    public int getUploadProgress() { return uploadProgress; }
-    public void setUploadProgress(int uploadProgress) { this.uploadProgress = uploadProgress; }
+    public String getStatus_upload() { return status_upload; }
+
+    // Setter
+    public void setStatus_upload(String status_upload) { this.status_upload = status_upload; }
+
+    // Required for Queue.contains() check
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        VideoModel that = (VideoModel) o;
+        // Videos are considered equal if their file name and URI path match
+        return name.equals(that.name) && path.equals(that.path);
+    }
+
+    @Override
+    public int hashCode() {
+        return java.util.Objects.hash(path, name);
+    }
 }

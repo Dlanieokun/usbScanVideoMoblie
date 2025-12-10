@@ -13,8 +13,7 @@ import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.example.peo.R;
-// import com.example.peo.VideoPlayerActivity; // No longer needed
+import com.example.peo.R; // Assumed R is available
 import com.example.peo.model.VideoModel;
 
 import java.util.List;
@@ -40,62 +39,27 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         VideoModel video = list.get(position);
         holder.tvName.setText(video.getName());
+        holder.tvDate.setText("File Date: " + video.getLastModifiedString()); // Calls the new getter
+        holder.tvUploadStatus.setText("Status: " + video.getStatus_upload());
 
-        // 1. Load thumbnail
-        holder.ivThumbnail.setImageResource(android.R.drawable.ic_menu_gallery);
+        // Load thumbnail asynchronously
         new ThumbnailLoaderTask(holder.ivThumbnail, video.getPath()).execute();
 
-        // 2. Set file date
-        holder.tvDate.setText("File Date: " + video.getLastModifiedString());
-
-        // 3. Display Upload Status and Check-in Time
-        String status = video.getStatus_upload(); // Retrieve status
-        String checkIn = video.getUpload_check_in(); // Retrieve check-in time
-
-        // --- NEW: Handle Uploading Percentage Status ---
-        String displayStatus = status;
-        boolean isUploadingWithProgress = false;
-        if (status.startsWith("UPLOADING (") && status.endsWith("%)")) {
-            displayStatus = status; // Show the percentage directly
-            isUploadingWithProgress = true;
-        } else if (status.equals("UPLOADING")) {
-            displayStatus = "Status: UPLOADING";
-        } else {
-            displayStatus = "Status: " + status;
-        }
-
-        holder.tvUploadStatus.setText(displayStatus);
-        // -----------------------------------------------
-
-        if (checkIn != null && !checkIn.isEmpty()) {
-            holder.tvUploadCheckIn.setText("Last Check-in: " + checkIn);
-        } else {
-            holder.tvUploadCheckIn.setText("Last Check-in: N/A");
-        }
-
-
-        // 4. Set upload status icon (UPDATED LOGIC)
-        // FIX: Added "UPLOAD COMPLETE" for consistency with the new TestUpload method
-        if (status.equals("DONE") || status.equals("UPLOADING COMPLETE") || status.equals("UPLOAD COMPLETE")) {
-            // Success
-            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
-            holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
-            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_green_dark));
-        } else if (status.equals("UPLOADING") || isUploadingWithProgress) {
-            // Actively Uploading
-            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_orange_dark));
-            holder.ivStatusIcon.setImageResource(R.drawable.ic_uploading);
-            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_orange_dark));
-        } else if (status.equals("PENDING")) {
-            // Pending or unknown status
-            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_blue_dark));
-            holder.ivStatusIcon.setImageResource(R.drawable.ic_pending);
-            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_blue_dark));
-        } else {
-            // Error/Failure
-            holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_red_dark));
-            holder.ivStatusIcon.setImageResource(R.drawable.ic_error);
-            holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_red_dark));
+        // Optional: Change status text color based on upload status
+        switch (video.getStatus_upload().split(" ")[0]) {
+            case "UPLOADING": // UPLOADING (0%)
+                holder.tvUploadStatus.setTextColor(0xFFFFA500); // Orange
+                break;
+            case "ALREADY": // ALREADY UPLOADED
+            case "COMPLETE": // UPLOAD COMPLETE
+                holder.tvUploadStatus.setTextColor(0xFF008000); // Green
+                break;
+            case "FAILED": // UPLOAD FAILED
+                holder.tvUploadStatus.setTextColor(0xFFFF0000); // Red
+                break;
+            default: // PENDING
+                holder.tvUploadStatus.setTextColor(0xFF000000); // Black
+                break;
         }
     }
 
@@ -105,29 +69,19 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
     }
 
     public static class ViewHolder extends RecyclerView.ViewHolder {
-        TextView tvName;
-        TextView tvDate;
+        TextView tvName, tvDate, tvUploadStatus;
         ImageView ivThumbnail;
-        ImageView ivStatusIcon;
-        // NEW
-        TextView tvUploadStatus;
-        TextView tvUploadCheckIn;
 
         public ViewHolder(@NonNull View itemView) {
             super(itemView);
             tvName = itemView.findViewById(R.id.tvVideoName);
             tvDate = itemView.findViewById(R.id.tvVideoDate);
-            ivThumbnail = itemView.findViewById(R.id.ivThumbnail);
-            ivStatusIcon = itemView.findViewById(R.id.ivStatusIcon);
-            // NEW
             tvUploadStatus = itemView.findViewById(R.id.tvUploadStatus);
-            tvUploadCheckIn = itemView.findViewById(R.id.tvUploadCheckIn);
+            ivThumbnail = itemView.findViewById(R.id.ivThumbnail);
         }
     }
 
-    /**
-     * AsyncTask to load video thumbnail off the main thread using MediaMetadataRetriever.
-     */
+    // AsyncTask for loading video thumbnails (SAF friendly)
     private class ThumbnailLoaderTask extends AsyncTask<Void, Void, Bitmap> {
         private final ImageView imageView;
         private final String videoPath;
@@ -169,6 +123,7 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
             if (bitmap != null) {
                 imageView.setImageBitmap(bitmap);
             } else {
+                // Fallback to a default icon defined by Android
                 imageView.setImageResource(android.R.drawable.ic_menu_gallery);
             }
         }

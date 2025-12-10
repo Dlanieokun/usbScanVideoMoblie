@@ -18,7 +18,6 @@ import android.widget.ProgressBar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.textfield.TextInputLayout;
 
-// --- ADDED OkHttp Imports ---
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.FormBody;
@@ -37,36 +36,27 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-// Assuming MainActivity, HomeFragment, and R.layout.fragment_setting are defined elsewhere
 public class SettingFragment extends Fragment {
 
-    // NOTE: For production use, define base_url in a constants file or strings.xml
     final String base_url = "http://apps.leyteprovince.gov.ph:70/gov_peo/index.php/";
 
     private AutoCompleteTextView projectDropdown;
     private MaterialButton configButton;
-    // UI elements for showing saved status
     private TextView savedProjectTextView;
     private TextInputLayout projectDropdownContainer;
     private ProgressBar configProgressBar;
 
-
-    // List to hold the entire project data (name and ID)
     private List<ProjectItem> projectList = new ArrayList<>();
 
-    // Define keys for SharedPreferences
     private static final String PREF_NAME = "ProjectSettings";
     private static final String KEY_PROJECT_NAME = "selected_project_name";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-    //    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 1
-    private static final String KEY_CAMERA_1_ID = "camera1ID"; // Camera 2
+    private static final String KEY_CAMERA_1_ID = "camera1ID";
     private static final String CON_CAMERA = "camera 1";
 
-    // Constants for the project check file (used by MainActivity and HomeFragment)
     private static final String APP_PREFS_FILE = "app_local_data";
     private static final String PROJECT_NAME_KEY = "name_of_project";
 
-    // OkHttp Client instance (Replaces Volley RequestQueue)
     private OkHttpClient okHttpClient;
 
 
@@ -86,32 +76,24 @@ public class SettingFragment extends Fragment {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // Initialize OkHttpClient
-        // Best practice: Reuse a single OkHttpClient instance throughout your app.
         okHttpClient = new OkHttpClient();
     }
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
-        // R.layout.fragment_setting is assumed to exist
         View view = inflater.inflate(R.layout.fragment_setting, container, false);
 
         projectDropdown = view.findViewById(R.id.projectAutoCompleteTextView);
         configButton = view.findViewById(R.id.configButton);
-        // Initialize new UI elements
         savedProjectTextView = view.findViewById(R.id.savedProjectTextView);
         projectDropdownContainer = view.findViewById(R.id.project_dropdown_container);
         configProgressBar = view.findViewById(R.id.configProgressBar);
 
-
-        // Set OnClickListener to call the saving logic
         configButton.setOnClickListener(v -> saveSelectedProject());
 
-        // Initial UI check and populate (if not configured)
         checkAndSetUI();
 
-        // Fetch data only if the project is not already saved
         if (getSavedProjectName() == null) {
             processAllProject("/Api/listOfProjects");
         }
@@ -158,38 +140,30 @@ public class SettingFragment extends Fragment {
         String savedProject = getSavedProjectName();
 
         if (savedProject != null) {
-            // Project is saved: Hide config, show confirmation
             projectDropdownContainer.setVisibility(View.GONE);
             configButton.setVisibility(View.GONE);
-            configProgressBar.setVisibility(View.GONE); // Ensure it's hidden
+            configProgressBar.setVisibility(View.GONE);
             savedProjectTextView.setVisibility(View.VISIBLE);
             savedProjectTextView.setText("✅ Project configured: \n" + savedProject);
         } else {
-            // Project is NOT saved: Show config, hide confirmation
             projectDropdownContainer.setVisibility(View.VISIBLE);
             configButton.setVisibility(View.VISIBLE);
-            configProgressBar.setVisibility(View.GONE); // Ensure it's hidden
+            configProgressBar.setVisibility(View.GONE);
             savedProjectTextView.setVisibility(View.GONE);
+            if (projectList.isEmpty() || projectDropdown.getAdapter() == null) {
+                processAllProject("/Api/listOfProjects");
+            }
         }
     }
 
-    /**
-     * Retrieves the currently saved project name from SharedPreferences,
-     * but only if the critical KEY_CAMERA_1_ID is also present.
-     * @return The saved project name, or null if configuration is incomplete.
-     */
     private String getSavedProjectName() {
         if (!isAdded()) return null;
         SharedPreferences sharedPref = requireContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
 
-        // 1. Check for Project Name/ID
         String projectName = sharedPref.getString(KEY_PROJECT_NAME, null);
         String projectId = sharedPref.getString(KEY_PROJECT_ID, null);
-
-        // 2. Check for Camera ID (The critical step)
         String camera1Id = sharedPref.getString(KEY_CAMERA_1_ID, null);
 
-        // Configuration is complete only if we have all three crucial pieces of data
         boolean isFullyConfigured = projectName != null
                 && !projectName.isEmpty()
                 && !projectName.equals("--- Choose a Project ---")
@@ -209,19 +183,15 @@ public class SettingFragment extends Fragment {
      * and then calls the API to save the project folder.
      */
     private void saveSelectedProject() {
-        // FIX 1: Ensure fragment is attached before accessing context
         if (!isAdded()) return;
 
-        // 1. Get the currently selected text from the dropdown
         String selectedProjectName = projectDropdown.getText().toString();
 
-        // Check if the placeholder is selected
         if (selectedProjectName.equals("--- Choose a Project ---") || selectedProjectName.isEmpty()) {
             Toast.makeText(requireContext(), "Please select a valid project first.", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // 2. Find the matching Project ID from the stored list
         String selectedProjectId = null;
         for (ProjectItem item : projectList) {
             if (item.name.equals(selectedProjectName)) {
@@ -230,74 +200,78 @@ public class SettingFragment extends Fragment {
             }
         }
 
-        // 3. Save to SharedPreferences and call external API
         if (selectedProjectId != null) {
-            // Get SharedPreferences for 'ProjectSettings'
             SharedPreferences sharedPref = requireContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
             SharedPreferences.Editor editor = sharedPref.edit();
 
-            // Save the currently selected project details
             editor.putString(KEY_PROJECT_NAME, selectedProjectName);
             editor.putString(KEY_PROJECT_ID, selectedProjectId);
 
-            // IMPORTANT: Clear the camera ID temporarily. It will be set by saveProjectFolder.
-            // This ensures getSavedProjectName() is false until the second API succeeds.
             editor.remove(KEY_CAMERA_1_ID);
 
-            // FIX 2: Also save the project name to the local file that HomeFragment and MainActivity check (app_local_data)
             SharedPreferences appSharedPrefs = requireContext().getSharedPreferences(APP_PREFS_FILE, Context.MODE_PRIVATE);
             appSharedPrefs.edit().putString(PROJECT_NAME_KEY, selectedProjectName).apply();
 
-
-            // Use commit() to ensure synchronous save and check for success
             if (editor.commit()) {
-                // NEW: Show loading state since configuration is a two-step process
                 showLoadingState();
 
-                // SUCCESS: Now call the second API
                 saveProjectFolder("/Api/listOfProjectFolders", selectedProjectId);
                 Toast.makeText(requireContext(), "Project Selected. Retrieving folder details...", Toast.LENGTH_LONG).show();
-
-                // FIX 3: Redirect to HomeFragment after a successful configuration (optional redirect)
-                // if (isAdded() && getActivity() instanceof MainActivity) {
-                //     MainActivity activity = (MainActivity) requireActivity();
-                //     activity.loadFragment(new HomeFragment());
-                //     activity.bottomNavigationView.setSelectedItemId(R.id.home);
-                // }
 
             } else {
                 Toast.makeText(requireContext(), "Failed to save project settings locally.", Toast.LENGTH_SHORT).show();
             }
         } else {
-            Toast.makeText(requireContext(), "Error: Could not find project ID.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(requireContext(), "Error: Project '" + selectedProjectName + "' not found in the list.", Toast.LENGTH_LONG).show();
         }
     }
 
     /**
-     * Parses the JSON array response and populates the dropdown.
+     * Clears all project configuration keys from SharedPreferences,
+     * effectively resetting the fragment to allow a new selection.
+     */
+    private void clearSavedProject() {
+        if (!isAdded()) return;
+
+        SharedPreferences sharedPref = requireContext().getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = sharedPref.edit();
+
+        editor.remove(KEY_PROJECT_NAME);
+        editor.remove(KEY_PROJECT_ID);
+        editor.remove(KEY_CAMERA_1_ID);
+
+        SharedPreferences appSharedPrefs = requireContext().getSharedPreferences(APP_PREFS_FILE, Context.MODE_PRIVATE);
+        appSharedPrefs.edit().remove(PROJECT_NAME_KEY).apply();
+
+        if (editor.commit()) {
+            Toast.makeText(requireContext(), "Configuration reset. Please select a new project.", Toast.LENGTH_LONG).show();
+            checkAndSetUI();
+        } else {
+            Toast.makeText(requireContext(), "Failed to clear project configuration.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+
+    /**
+     * Parses the JSON array response and populates the AutoCompleteTextView.
      */
     private void populateSpinner(String response) {
-        // FIX 4: Ensure fragment is attached before calling requireContext()
         if (!isAdded()) {
             Log.w("OKHTTP", "Fragment not attached. Skipping UI update in populateSpinner.");
             return;
         }
 
-        // Do not populate spinner if a project is already configured
         if (getSavedProjectName() != null) {
-            Log.d("OKHTTP", "Project already configured. Skipping spinner population.");
+            Log.d("OKHTTP", "Project already configured. Skipping dropdown population.");
             return;
         }
 
         List<String> projectNames = new ArrayList<>();
-        // Clear previous data
         projectList.clear();
 
         try {
-            // Correctly parse the response as a direct JSONArray
             JSONArray dataArray = new JSONArray(response);
 
-            // Add a placeholder/default item at the start of the list
             String placeholder = "--- Choose a Project ---";
             projectNames.add(placeholder);
 
@@ -309,40 +283,31 @@ public class SettingFragment extends Fragment {
 
                 projectNames.add(projectName);
 
-                // Store the project data in the list
                 projectList.add(new ProjectItem(projectId, projectName));
             }
         } catch (JSONException e) {
             Log.e("OKHTTP", "JSON Parsing Error: " + e.getMessage());
-            // Add error message to list if parsing fails
             projectNames.add("Error loading projects");
         }
 
-        // Create an ArrayAdapter
         ArrayAdapter<String> adapter = new ArrayAdapter<>(
                 requireContext(),
                 android.R.layout.simple_dropdown_item_1line,
                 projectNames
         );
 
-        // Apply the adapter to the AutoCompleteTextView and set the default text
         if (projectDropdown != null && !projectNames.isEmpty()) {
             projectDropdown.setAdapter(adapter);
-            // Only set text if the dropdown is visible (i.e., not configured)
-            if(projectDropdownContainer.getVisibility() == View.VISIBLE) {
-                projectDropdown.setText(projectNames.get(0), false);
-            }
+            projectDropdown.setText(projectNames.get(0), false);
         }
     }
 
     public void processAllProject(final String url) {
-        // Check if already configured before making API call
         if (getSavedProjectName() != null) {
             Log.d("OKHTTP", "Project already configured. Skipping project list API call.");
             return;
         }
 
-        // Ensure client is initialized
         if (okHttpClient == null) {
             Log.e("OKHTTP", "OkHttpClient is null. Cannot proceed.");
             return;
@@ -351,7 +316,6 @@ public class SettingFragment extends Fragment {
         String finalUrl = Uri.parse(base_url + url).toString();
         Log.d("OKHTTP", "Final URL: " + finalUrl);
 
-        // Replaced Volley POST without body with OkHttp POST with an empty FormBody
         RequestBody requestBody = new FormBody.Builder().build();
 
         Request request = new Request.Builder()
@@ -363,7 +327,6 @@ public class SettingFragment extends Fragment {
             @Override
             public void onFailure(Call call, IOException e) {
                 Log.e("OKHTTP", "OkHttp Error: " + e.getMessage());
-                // Handle error on the main thread
                 if (isAdded()) {
                     requireActivity().runOnUiThread(() -> populateSpinner("[]"));
                 }
@@ -373,11 +336,9 @@ public class SettingFragment extends Fragment {
             public void onResponse(Call call, Response response) throws IOException {
                 if (!response.isSuccessful()) {
                     Log.e("OKHTTP", "Unsuccessful response code: " + response.code());
-                    // Treat as failure
                     if (isAdded()) {
                         requireActivity().runOnUiThread(() -> populateSpinner("[]"));
                     }
-                    // Close response body on failure
                     if (response.body() != null) {
                         response.body().close();
                     }
@@ -395,7 +356,6 @@ public class SettingFragment extends Fragment {
                     final String responseData = responseBody.string();
                     Log.d("OKHTTP", "Response: " + responseData);
 
-                    // Update UI on the main thread
                     if (isAdded()) {
                         requireActivity().runOnUiThread(() -> populateSpinner(responseData));
                     }
@@ -413,7 +373,6 @@ public class SettingFragment extends Fragment {
         String finalUrl = base_url + "/" + path;
         Log.d("OKHTTP", "Attempting Final Folder URL: " + finalUrl);
 
-        // Ensure client is initialized
         if (okHttpClient == null) {
             Log.e("OKHTTP", "OkHttpClient is null. Cannot proceed.");
             hideLoadingState("CONFIG");
@@ -423,7 +382,6 @@ public class SettingFragment extends Fragment {
             return;
         }
 
-        // Volley's getParams() maps directly to OkHttp's FormBody for POST
         RequestBody formBody = new FormBody.Builder()
                 .add("project_id", id)
                 .build();
@@ -438,7 +396,6 @@ public class SettingFragment extends Fragment {
             public void onFailure(Call call, IOException e) {
                 Log.e("OKHTTP", "OkHttp Error in Folder API: " + e.getMessage());
                 if (isAdded()) {
-                    // Update UI on the main thread
                     requireActivity().runOnUiThread(() -> {
                         Toast.makeText(requireContext(), "Failed to retrieve folder details from server.", Toast.LENGTH_LONG).show();
                         hideLoadingState("CONFIG");
@@ -448,7 +405,6 @@ public class SettingFragment extends Fragment {
 
             @Override
             public void onResponse(Call call, Response response) throws IOException {
-                // CRITICAL CRASH FIX: Check for fragment attachment
                 if (!isAdded()) {
                     Log.w("OKHTTP", "Fragment detached. Skipping folder save on response.");
                     return;
@@ -457,13 +413,11 @@ public class SettingFragment extends Fragment {
                 if (!response.isSuccessful()) {
                     Log.e("OKHTTP", "Unsuccessful folder response code: " + response.code());
                     if (isAdded()) {
-                        // Update UI on the main thread
                         requireActivity().runOnUiThread(() -> {
                             Toast.makeText(requireContext(), "Server error retrieving folder details.", Toast.LENGTH_LONG).show();
                             hideLoadingState("CONFIG");
                         });
                     }
-                    // Close response body on failure
                     if (response.body() != null) {
                         response.body().close();
                     }
@@ -486,7 +440,6 @@ public class SettingFragment extends Fragment {
                     Log.d("OKHTTP", "Response in Folder: " + responseData);
                 }
 
-                // Process JSON and update UI on the main thread
                 if (isAdded()) {
                     requireActivity().runOnUiThread(() -> {
                         try {
@@ -496,7 +449,6 @@ public class SettingFragment extends Fragment {
                             SharedPreferences.Editor editor = sharedPref.edit();
                             boolean foundCamera = false;
 
-                            // Iterate to find the "camera 1" folder ID
                             for (int i = 0; i < jsonArray.length(); i++) {
                                 JSONObject folder = jsonArray.getJSONObject(i);
                                 String folderName = folder.getString("folder_name");
@@ -507,27 +459,23 @@ public class SettingFragment extends Fragment {
                                     editor.apply();
                                     Log.d("CAMERA_SAVE", "Found '"+CON_CAMERA+"' folder. ID saved: " + folderId + " to " + KEY_CAMERA_1_ID);
                                     foundCamera = true;
-                                    break; // Stop looping once found
+                                    break;
                                 }
                             }
 
-                            // After API call, check if configuration is complete and update UI
                             if (foundCamera) {
                                 Toast.makeText(requireContext(), "Project configured successfully!", Toast.LENGTH_LONG).show();
                             } else {
                                 Toast.makeText(requireContext(), "Error: '"+CON_CAMERA+"' folder ID not found.", Toast.LENGTH_LONG).show();
                             }
 
-                            // Always hide loading state on completion of the second API call
                             hideLoadingState("CONFIG");
 
-                            // This call now relies on KEY_CAMERA_1_ID being set
                             checkAndSetUI();
 
                         } catch (JSONException e) {
                             Log.e("OKHTTP", "Folder JSON Parsing Error: " + e.getMessage());
                             Toast.makeText(requireContext(), "Error parsing folder details.", Toast.LENGTH_LONG).show();
-                            // Hide loading state on JSON error
                             hideLoadingState("CONFIG");
                         }
                     });

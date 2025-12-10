@@ -47,12 +47,9 @@
                 android:id="@+id/projectAutoCompleteTextView"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="none"
-                android:focusable="false"
-                android:clickable="true"/>
+                android:inputType="text"            android:focusable="true"             android:clickable="true"/>
 
         </com.google.android.material.textfield.TextInputLayout>
-
         <com.google.android.material.button.MaterialButton
             android:id="@+id/configButton"
             android:layout_width="match_parent"
