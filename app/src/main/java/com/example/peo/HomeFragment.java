@@ -260,6 +260,12 @@ public class HomeFragment extends Fragment implements
         // --- IMPROVEMENT: Persist the status to SharedPreferences ---
         saveVideoStatus(videoName, newStatus);
         // -----------------------------------------------------------
+
+        // CRITICAL CHANGE: If upload finished successfully, delete the internal file
+        if ("SUCCESSFULLY UPLOAD".equals(newStatus) || "ALREADY UPLOADED".equals(newStatus)) {
+            deleteInternalFile(videoName);
+        }
+
         safeRunOnUiThread(() -> {
             for (VideoModel video : videoList) {
                 if (video.getName().equals(videoName)) {
@@ -286,8 +292,7 @@ public class HomeFragment extends Fragment implements
             // Update the visible internal queue count
             updateInternalQueueCount();
 
-            // CRITICAL CHANGE: Removed the automatic scan here.
-            // Retries will now only happen on App Start/Refresh.
+            // Retries will now only happen on App Start/Refresh (scanAllPersistedUris() removed here).
         });
     }
 
@@ -405,6 +410,32 @@ public class HomeFragment extends Fragment implements
 
         return requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
                 .getString(KEY_STATUS_PREFIX + videoName, "PENDING");
+    }
+
+    /** Deletes the video file from the internal 'upload_cache' directory and updates the UI. */
+    private void deleteInternalFile(String fileName) {
+        if (!isAdded()) return;
+
+        File internalDir = new File(requireContext().getFilesDir(), "upload_cache");
+        File fileToDelete = new File(internalDir, fileName);
+
+        if (fileToDelete.exists()) {
+            if (fileToDelete.delete()) {
+                Log.d("FILE_CLEANUP", "Successfully deleted internal cache file: " + fileName);
+                // Optionally remove the status preference as well, though it's now redundant
+                requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
+                        .edit()
+                        .remove(KEY_STATUS_PREFIX + fileName)
+                        .apply();
+
+                // After deletion, update the queue count, as the scan logic won't pick it up anymore.
+                updateInternalQueueCount();
+            } else {
+                Log.e("FILE_CLEANUP", "Failed to delete internal cache file: " + fileName);
+            }
+        } else {
+            Log.d("FILE_CLEANUP", "Internal cache file not found, skipping deletion: " + fileName);
+        }
     }
 
     // ----------------------------------------------------
@@ -698,6 +729,8 @@ public class HomeFragment extends Fragment implements
                                 // --- IMPROVEMENT: Persist final status ---
                                 saveVideoStatus(file.getName(), "ALREADY UPLOADED");
                                 // ------------------------------------------
+                                // CRITICAL: If successfully uploaded (via history), clean up internal cache now.
+                                deleteInternalFile(file.getName());
                                 break;
                             }
                         }
@@ -893,7 +926,7 @@ public class HomeFragment extends Fragment implements
                         String status = loadVideoStatus(fileName);
 
                         // Only count files that are still considered part of the active queue (PENDING, FAILED, UPLOADING)
-                        if (!"ALREADY UPLOADED".equals(status)) {
+                        if (!"ALREADY UPLOADED".equals(status) && !"SUCCESSFULLY UPLOAD".equals(status)) {
                             internalQueueCount++;
                             totalSize += file.length();
                         }

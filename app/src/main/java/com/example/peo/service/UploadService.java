@@ -181,7 +181,7 @@ public class UploadService extends Service {
      */
     private synchronized void handleUploadCompletion(VideoModel video, String finalStatus) {
         // CRITICAL CHANGE: Remove video on UPLOAD COMPLETE, ALREADY UPLOADED, OR UPLOAD FAILED
-        boolean shouldRemoveFromQueue = "UPLOAD COMPLETE".equals(finalStatus) ||
+        boolean shouldRemoveFromQueue = "SUCCESSFULLY UPLOAD".equals(finalStatus) ||
                 "ALREADY UPLOADED".equals(finalStatus) ||
                 "UPLOAD FAILED".equals(finalStatus);
 
@@ -285,7 +285,7 @@ public class UploadService extends Service {
                         if (responseString.contains("\"Video file already exists\"")) {
                             finalStatus = "ALREADY UPLOADED";
                         } else if (responseString.contains("\"success\"")) {
-                            finalStatus = "UPLOAD COMPLETE";
+                            finalStatus = "SUCCESSFULLY UPLOAD";
                         } else {
                             finalStatus = "UPLOAD FAILED";
                         }

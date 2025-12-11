@@ -52,7 +52,7 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
                 holder.ivStatusIcon.setImageResource(R.drawable.ic_uploading);
                 holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_orange_dark));
                 break;
-            case "COMPLETE": // UPLOAD COMPLETE
+            case "SUCCESSFULLY": // UPLOAD COMPLETE
                 holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
                 holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
                 holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_green_dark));
