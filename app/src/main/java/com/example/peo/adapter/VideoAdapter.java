@@ -48,17 +48,26 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
         // Optional: Change status text color based on upload status
         switch (video.getStatus_upload().split(" ")[0]) {
             case "UPLOADING": // UPLOADING (0%)
-                holder.tvUploadStatus.setTextColor(0xFFFFA500); // Orange
+                holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_orange_dark));
+                holder.ivStatusIcon.setImageResource(R.drawable.ic_uploading);
+                holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_orange_dark));
+                break;
+            case "COMPLETE": // UPLOAD COMPLETE
+                holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_green_dark));
+                holder.ivStatusIcon.setImageResource(R.drawable.ic_uploaded);
+                holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_green_dark));
                 break;
             case "ALREADY": // ALREADY UPLOADED
-            case "COMPLETE": // UPLOAD COMPLETE
-                holder.tvUploadStatus.setTextColor(0xFF008000); // Green
-                break;
             case "FAILED": // UPLOAD FAILED
-                holder.tvUploadStatus.setTextColor(0xFFFF0000); // Red
+            case "UPLOAD": // UPLOAD FAILED
+                holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_red_dark));
+                holder.ivStatusIcon.setImageResource(R.drawable.ic_error);
+                holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_red_dark));
                 break;
             default: // PENDING
-                holder.tvUploadStatus.setTextColor(0xFF000000); // Black
+                holder.tvUploadStatus.setTextColor(context.getResources().getColor(android.R.color.holo_blue_dark));
+                holder.ivStatusIcon.setImageResource(R.drawable.ic_pending);
+                holder.ivStatusIcon.setColorFilter(context.getResources().getColor(android.R.color.holo_blue_dark));
                 break;
         }
     }
@@ -70,7 +79,7 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
 
     public static class ViewHolder extends RecyclerView.ViewHolder {
         TextView tvName, tvDate, tvUploadStatus;
-        ImageView ivThumbnail;
+        ImageView ivThumbnail, ivStatusIcon;
 
         public ViewHolder(@NonNull View itemView) {
             super(itemView);
@@ -78,6 +87,7 @@ public class VideoAdapter extends RecyclerView.Adapter<VideoAdapter.ViewHolder> 
             tvDate = itemView.findViewById(R.id.tvVideoDate);
             tvUploadStatus = itemView.findViewById(R.id.tvUploadStatus);
             ivThumbnail = itemView.findViewById(R.id.ivThumbnail);
+            ivStatusIcon = itemView.findViewById(R.id.ivStatusIcon);
         }
     }
 

@@ -20,6 +20,8 @@ import androidx.core.app.NotificationCompat;
 import com.example.peo.R; // Assumed to be accessible
 import com.example.peo.model.VideoModel; // Assumed to be accessible
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
@@ -52,8 +54,6 @@ public class UploadService extends Service {
     public static final String EXTRA_VIDEO_NAMES = "com.example.peo.EXTRA_VIDEO_NAMES";
     public static final String EXTRA_PROJECT_ID = "com.example.peo.EXTRA_PROJECT_ID";
     public static final String EXTRA_CAMERA_ID = "com.example.peo.EXTRA_CAMERA_ID";
-
-    // NO MORE Broadcast Actions and Extras
 
     private static final String NOTIFICATION_CHANNEL_ID = "UploadServiceChannel";
     private static final int NOTIFICATION_ID = 101;
@@ -145,6 +145,10 @@ public class UploadService extends Service {
         return START_NOT_STICKY;
     }
 
+    /**
+     * Attempts to process the video at the head of the queue.
+     * Uses peek() instead of poll() to keep the video in the queue until confirmed successful.
+     */
     private synchronized void processNextUpload() {
         VideoModel videoToUpload;
         synchronized (uploadQueue) {
@@ -157,49 +161,82 @@ public class UploadService extends Service {
                 stopSelf();
                 return;
             }
-            videoToUpload = uploadQueue.poll(); // Get and remove the head of the queue
+            // CRITICAL CHANGE: Peek instead of poll to keep video in queue if it fails
+            videoToUpload = uploadQueue.peek();
         }
 
         if (videoToUpload != null) {
-            updateNotification("Uploading: " + videoToUpload.getName() + " (" + uploadQueue.size() + " left)", 0);
+            // Calculate remaining count (excluding the one currently uploading)
+            int videosLeft = uploadQueue.size() - 1;
+            updateNotification("Uploading: " + videoToUpload.getName() + " (" + videosLeft + " left)", 0);
             uploadVideo(videoToUpload);
         }
     }
+
+    /**
+     * Centralized logic to manage the queue after an upload attempt.
+     * Ensures video is only removed on success or immediate failure.
+     * * @param video The video that was processed.
+     * @param finalStatus The resulting status of the upload.
+     */
+    private synchronized void handleUploadCompletion(VideoModel video, String finalStatus) {
+        // CRITICAL CHANGE: Remove video on UPLOAD COMPLETE, ALREADY UPLOADED, OR UPLOAD FAILED
+        boolean shouldRemoveFromQueue = "UPLOAD COMPLETE".equals(finalStatus) ||
+                "ALREADY UPLOADED".equals(finalStatus) ||
+                "UPLOAD FAILED".equals(finalStatus);
+
+        synchronized (uploadQueue) {
+            // Only proceed if the item at the head is the one we just processed
+            if (!uploadQueue.isEmpty() && uploadQueue.peek().equals(video)) {
+
+                if (shouldRemoveFromQueue) {
+                    // Success OR Failure: Remove it from the queue permanently for this service run.
+                    uploadQueue.poll();
+                    if ("UPLOAD FAILED".equals(finalStatus)) {
+                        Log.d("UPLOAD_SERVICE", "Upload failed for " + video.getName() + ". Removed from queue. Will retry on next app start/refresh.");
+                    }
+                }
+            } else {
+                Log.e("UPLOAD_SERVICE", "Queue head mismatch or queue empty after upload attempt for " + video.getName());
+            }
+        }
+
+        // Always call to process the next item
+        processNextUpload();
+    }
+
 
     private void uploadVideo(VideoModel video) {
         if (progressListener != null) {
             progressListener.onProgressUpdate(video.getName(), "UPLOADING (0%)");
         }
-        Uri videoUri = Uri.parse(video.getPath());
 
-        // 1. Get file metadata (unchanged logic)
-        String finalFileName = video.getName();
-        String finalMimeType = "application/octet-stream";
-        long finalFileSize = -1;
-        long lastModifiedTime = video.getLastModified() > 0 ? video.getLastModified() : System.currentTimeMillis();
+        // --- CORRECTED METADATA RETRIEVAL (Using standard File I/O) ---
+        File videoFile = new File(video.getPath());
 
-        try (Cursor cursor = getContentResolver().query(videoUri, null, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int mimeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE);
-                if (mimeIndex != -1) finalMimeType = cursor.getString(mimeIndex);
-                int sizeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE);
-                if (sizeIndex != -1) finalFileSize = cursor.getLong(sizeIndex);
-            }
-        } catch (Exception e) {
-            Log.e("UPLOAD_SERVICE", "Error getting file metadata: " + e.getMessage());
+        if (!videoFile.exists()) {
+            Log.e("UPLOAD_SERVICE", "Internal file not found: " + video.getPath());
             if (progressListener != null) {
-                progressListener.onProgressUpdate(video.getName(), "UPLOAD FAILED: Metadata Error");
+                progressListener.onProgressUpdate(video.getName(), "UPLOAD FAILED");
             }
-            processNextUpload();
+            // Use handler on failure to remove it from the queue
+            handleUploadCompletion(video, "UPLOAD FAILED");
             return;
         }
 
-        if (finalFileSize == -1) {
-            Log.e("UPLOAD_SERVICE", "File size could not be determined for: " + finalFileName);
+        String finalFileName = video.getName();
+        // A generic mime type is used since we cannot reliably check using ContentResolver now
+        String finalMimeType = "application/octet-stream";
+        long finalFileSize = videoFile.length();
+        long lastModifiedTime = videoFile.lastModified(); // Use the local file's modification time.
+
+        if (finalFileSize <= 0) { // Check for zero size as well
+            Log.e("UPLOAD_SERVICE", "File size could not be determined or is zero for: " + finalFileName);
             if (progressListener != null) {
-                progressListener.onProgressUpdate(video.getName(), "UPLOAD FAILED: Size Unknown");
+                progressListener.onProgressUpdate(video.getName(), "UPLOAD FAILED");
             }
-            processNextUpload();
+            // Use handler on failure to remove it from the queue
+            handleUploadCompletion(video, "UPLOAD FAILED");
             return;
         }
 
@@ -231,9 +268,10 @@ public class UploadService extends Service {
             public void onFailure(Call call, IOException e) {
                 Log.e("UPLOAD_SERVICE", "Upload Failed for " + finalFileName + ": " + e.getMessage());
                 if (progressListener != null) {
-                    progressListener.onProgressUpdate(video.getName(), "UPLOAD FAILED: Network Error");
+                    progressListener.onProgressUpdate(video.getName(), "UPLOAD FAILED");
                 }
-                processNextUpload();
+                // Use handler on failure to remove it from the queue
+                handleUploadCompletion(video, "UPLOAD FAILED");
             }
 
             @Override
@@ -249,25 +287,24 @@ public class UploadService extends Service {
                         } else if (responseString.contains("\"success\"")) {
                             finalStatus = "UPLOAD COMPLETE";
                         } else {
-                            finalStatus = "UPLOAD FAILED: Server Refused";
+                            finalStatus = "UPLOAD FAILED";
                         }
                     } else {
-                        finalStatus = "UPLOAD FAILED: HTTP " + response.code();
+                        finalStatus = "UPLOAD FAILED";
                     }
                 } finally {
                     if (progressListener != null) {
                         progressListener.onProgressUpdate(video.getName(), finalStatus);
                     }
                     response.close();
-                    processNextUpload(); // Move to the next item
+                    // Use handler to manage queue
+                    handleUploadCompletion(video, finalStatus);
                 }
             }
         });
     }
 
     // --- Service Communication and Notification Methods ---
-
-    // Removed broadcastProgressUpdate and broadcastFinished
 
     private void updateNotification(String title, int progress) {
         Notification notification = buildNotification(title, progress);
@@ -321,12 +358,15 @@ public class UploadService extends Service {
             }
             @Override
             public void writeTo(BufferedSink sink) throws IOException {
-                try (InputStream inputStream = getContentResolver().openInputStream(Uri.parse(video.getPath()))) {
-                    if (inputStream == null) throw new IOException("Cannot open InputStream for URI.");
+                // --- CORRECTED FILE READING LOGIC ---
+                File videoFile = new File(video.getPath());
+                try (FileInputStream inputStream = new FileInputStream(videoFile)) {
+                    if (inputStream == null) throw new IOException("Cannot open FileInputStream for internal file.");
                     sink.writeAll(Okio.source(inputStream));
                 } catch (Exception e) {
-                    throw new IOException("Failed to write file stream.", e);
+                    throw new IOException("Failed to write file stream for " + video.getName() + ".", e);
                 }
+                // --- END CORRECTED FILE READING LOGIC ---
             }
         };
 
@@ -342,7 +382,8 @@ public class UploadService extends Service {
 
             // Update notification every 10%
             if (progress % 10 == 0 || progress == 1 || progress == 99) {
-                updateNotification("Uploading " + video.getName() + " (" + uploadQueue.size() + " left)", progress);
+                // The uploadQueue.size() includes the video currently uploading
+                updateNotification("Uploading " + video.getName() + " (" + (uploadQueue.size() - 1) + " left)", progress);
             }
         };
 

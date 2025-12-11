@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor; // New Import for file copying
 import android.provider.DocumentsContract;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -51,13 +52,18 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import java.io.IOException;
+import java.io.File; // New Import for file copying
+import java.io.FileInputStream; // New Import for file copying
+import java.io.FileOutputStream; // New Import for file copying
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 public class HomeFragment extends Fragment implements
@@ -78,17 +84,21 @@ public class HomeFragment extends Fragment implements
     private static final String KEY_CAMERA_1_ID = "camera1ID";
     private static final String CON_CAMERA = "camera 1";
 
+    // --- NEW CONSTANTS FOR PERSISTENT QUEUE STATUS ---
+    private static final String PREFS_QUEUE_STATUS = "video_queue_status";
+    private static final String KEY_STATUS_PREFIX = "status_";
+    // ---------------------------------------------------
+
     private TextView tvStatus;
     private TextView tvProjectName;
     private TextView tvSelectedFolder;
     private TextView tvError;
+    private TextView tvQueueCount;
     private Button btnRequestUsb;
     private RecyclerView rvVideos;
     private SwipeRefreshLayout swipeRefreshLayout;
     private VideoAdapter videoAdapter;
     private final List<VideoModel> videoList = new ArrayList<>();
-
-    // REMOVED: private UsbStorageReceiver usbStorageReceiver;
 
     private Handler observerHandler = new Handler(Looper.getMainLooper());
     private ContentObserver fileChangeObserver;
@@ -183,6 +193,7 @@ public class HomeFragment extends Fragment implements
         tvError = view.findViewById(R.id.tvError);
         rvVideos = view.findViewById(R.id.rvVideos);
         swipeRefreshLayout = view.findViewById(R.id.swipeRefreshLayout);
+        tvQueueCount = view.findViewById(R.id.tvQueueCount);
 
         rvVideos.setLayoutManager(new LinearLayoutManager(requireContext()));
         videoAdapter = new VideoAdapter(requireContext(), videoList);
@@ -201,6 +212,9 @@ public class HomeFragment extends Fragment implements
 
         // Check for URIs and set initial status, but DON'T trigger a scan yet.
         checkExistingUris();
+
+        // *** NEW CALL: Show internal queue count immediately on startup ***
+        updateInternalQueueCount();
 
         // This initiates the ONE-TIME startup logic: load prefs, update UI, and either
         // fetch server history OR start scan.
@@ -243,6 +257,9 @@ public class HomeFragment extends Fragment implements
     // Updates the progress of a single video
     @Override
     public void onProgressUpdate(String videoName, String newStatus) {
+        // --- IMPROVEMENT: Persist the status to SharedPreferences ---
+        saveVideoStatus(videoName, newStatus);
+        // -----------------------------------------------------------
         safeRunOnUiThread(() -> {
             for (VideoModel video : videoList) {
                 if (video.getName().equals(videoName)) {
@@ -255,14 +272,22 @@ public class HomeFragment extends Fragment implements
                 }
             }
         });
+        // *** NEW CALL: Update internal queue count on status change ***
+        updateInternalQueueCount();
     }
 
     // Called when the entire queue is finished
     @Override
     public void onUploadFinished(String message) {
         safeRunOnUiThread(() -> {
-            // FIX: Automatic full list scan/reload removed.
+            // Update the UI status to show the result of the batch upload
             updateUiStatus(message, btnRequestUsb.getVisibility() == View.VISIBLE);
+
+            // Update the visible internal queue count
+            updateInternalQueueCount();
+
+            // CRITICAL CHANGE: Removed the automatic scan here.
+            // Retries will now only happen on App Start/Refresh.
         });
     }
 
@@ -362,6 +387,28 @@ public class HomeFragment extends Fragment implements
         return new HashSet<>(savedSet);
     }
 
+    // --- NEW METHODS FOR PERSISTENT QUEUE STATUS ---
+
+    /** Saves a single video's current status to SharedPreferences. */
+    private void saveVideoStatus(String videoName, String status) {
+        if (!isAdded()) return;
+
+        requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_STATUS_PREFIX + videoName, status)
+                .apply();
+    }
+
+    /** Retrieves a single video's saved status, defaulting to "PENDING". */
+    private String loadVideoStatus(String videoName) {
+        if (!isAdded()) return "PENDING";
+
+        return requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
+                .getString(KEY_STATUS_PREFIX + videoName, "PENDING");
+    }
+
+    // ----------------------------------------------------
+
     /** CHECK URIS: Checks if URIs exist and updates UI, but defers the scan. */
     private void checkExistingUris() {
         if (!getPersistedUris().isEmpty()) {
@@ -371,6 +418,7 @@ public class HomeFragment extends Fragment implements
             // If no URIs, inform user to grant access
             updateUiStatus("Select a folder to begin scanning or click 'Request USB Access'.", true);
         }
+        // Initial queue count display is now handled by updateInternalQueueCount()
     }
 
     /** * SAF REQUEST: Launches the system document tree picker.
@@ -404,7 +452,8 @@ public class HomeFragment extends Fragment implements
             swipeRefreshLayout.setRefreshing(true);
         });
 
-        List<VideoModel> tempVideoList = new ArrayList<>();
+        // This list only holds videos found on the external storage (USB/SAF)
+        List<VideoModel> externalVideos = new ArrayList<>();
 
         new Thread(() -> {
 
@@ -412,6 +461,7 @@ public class HomeFragment extends Fragment implements
 
             Uri firstValidUri = null;
 
+            // 1. Scan external storage via SAF (will fail if USB is disconnected)
             for (String uriString : uriSet) {
                 if (!isAdded()) return;
 
@@ -421,7 +471,8 @@ public class HomeFragment extends Fragment implements
                     DocumentFile root = DocumentFile.fromTreeUri(requireContext(), rootUri);
 
                     if (root != null && root.isDirectory() && root.canRead()) {
-                        scanFolder(root, tempVideoList);
+                        // Populate externalVideos with files found on USB
+                        scanFolder(root, externalVideos);
                         if (firstValidUri == null) {
                             firstValidUri = rootUri;
                         }
@@ -429,24 +480,45 @@ public class HomeFragment extends Fragment implements
                         Log.w("SAF_SCAN", "Skipping URI: " + uriString + ". Root is null, not a directory, or cannot be read.");
                     }
                 } catch (SecurityException e) {
-                    Log.e("SAF_SCAN", "Security Exception reading URI: " + uriString + ". Needs re-permission.", e);
-                    // Add logic here to prompt user for re-permission or remove the URI
+                    Log.e("SAF_SCAN", "Security Exception reading URI: " + uriString + ". Needs re-permission. " + e.getMessage(), e);
                 }
             }
+
+            // 2. Scan internal 'upload_cache' for failed/pending uploads (decoupled from USB)
+            List<VideoModel> internalQueuedVideos = findInternalQueuedVideos();
+
+            // 3. Combine and deduplicate lists
+            // Use a map to track and deduplicate the list of all unique videos
+            Map<String, VideoModel> uniqueVideosMap = new HashMap<>();
+
+            // Add all external videos first (they have the most accurate external file metadata)
+            for (VideoModel video : externalVideos) {
+                uniqueVideosMap.put(video.getName(), video);
+            }
+
+            // Add internal videos, but only if they weren't found externally.
+            for (VideoModel video : internalQueuedVideos) {
+                if (!uniqueVideosMap.containsKey(video.getName())) {
+                    uniqueVideosMap.put(video.getName(), video);
+                }
+            }
+
+            // Rebuild the final list from the map
+            List<VideoModel> combinedVideoList = new ArrayList<>(uniqueVideosMap.values());
 
             // Must call on the main thread
             updateContentObserver(firstValidUri);
 
-            final int foundCount = tempVideoList.size();
+            final int foundCount = combinedVideoList.size(); // Total unique videos found
             // Show button only if no URIs are persisted OR if no videos were found
             final boolean showButton = uriSet.isEmpty() || foundCount == 0;
 
-            tempVideoList.sort((v1, v2) -> Long.compare(v1.getLastModified(), v2.getLastModified()));
+            combinedVideoList.sort((v1, v2) -> Long.compare(v1.getLastModified(), v2.getLastModified()));
 
-            // --- Find videos that need uploading ---
+            // --- Find videos that need uploading from the COMBINED list ---
             List<VideoModel> videosToUpload = new ArrayList<>();
-            for (VideoModel video : tempVideoList) {
-                // Only consider PENDING, UPLOAD FAILED, or UPLOADING (if service crashed)
+            for (VideoModel video : combinedVideoList) {
+                // ** THIS IS THE CORE RE-UPLOAD LOGIC (for pending/failed/in-progress uploads) **
                 if ("PENDING".equals(video.getStatus_upload()) ||
                         "UPLOAD FAILED".equals(video.getStatus_upload()) ||
                         "UPLOADING".equals(video.getStatus_upload())) {
@@ -459,12 +531,17 @@ public class HomeFragment extends Fragment implements
             safeRunOnUiThread(() -> {
                 // 1. UPDATE AND DISPLAY THE LIST
                 videoList.clear();
-                videoList.addAll(tempVideoList);
+                videoList.addAll(combinedVideoList); // Use combined list for display
                 videoAdapter.notifyDataSetChanged();
                 swipeRefreshLayout.setRefreshing(false);
 
+                // *** NEW CALL: Update internal queue count after scan and service start ***
+                updateInternalQueueCount();
+
+
                 // Show the button if no videos were found or no folders selected
-                updateUiStatus("Videos found: " + foundCount, showButton);
+                // Status is updated to a general 'Scan completed.' message
+                updateUiStatus("Scan completed.", showButton);
 
                 // FIX: Use the UI-only update method to prevent the infinite refresh loop
                 updateProjectUIOnly();
@@ -473,6 +550,7 @@ public class HomeFragment extends Fragment implements
                 if (!videosToUpload.isEmpty()) {
                     startUploadService(videosToUpload);
                 }
+                // If videosToUpload is empty, the queue is finished, and the loop naturally stops here.
             });
         }).start();
     }
@@ -488,9 +566,12 @@ public class HomeFragment extends Fragment implements
         for (VideoModel video : videosToUpload) {
             videoUris.add(video.getPath());
             videoNames.add(video.getName());
-            // Immediately set the status to PENDING in the UI list before starting the service
-            // NOTE: Changing this to "UPLOADING" is usually better if the service is about to start immediately
-            video.setStatus_upload("PENDING");
+
+            // Immediately set the status to UPLOADING in the UI list and persist it
+            video.setStatus_upload("UPLOADING");
+            // --- IMPROVEMENT: Persist the status as UPLOADING ---
+            saveVideoStatus(video.getName(), "UPLOADING");
+            // ---------------------------------------------------
         }
         videoAdapter.notifyDataSetChanged();
         updateUiStatus("Starting background upload service. Processing " + videosToUpload.size() + " videos.", false);
@@ -530,46 +611,100 @@ public class HomeFragment extends Fragment implements
         doStartUploadService(videosToUpload);
     }
 
-    /** Scans a single folder recursively. Videos are added to the shared tempVideoList. */
-    private void scanFolder(DocumentFile folder, List<VideoModel> tempVideoList) {
+    /**
+     * Copies a DocumentFile (from SAF Uri) to a private internal storage location.
+     * @param file The DocumentFile object pointing to the external video.
+     * @return The absolute path of the new file in internal storage, or null on failure.
+     */
+    private String copyFileToInternalStorage(DocumentFile file) {
+        if (!isAdded()) return null;
+        if (file.getName() == null) return null;
+
+        try {
+            // 1. Define the internal storage destination path (e.g., /data/data/com.example.peo/files/upload_cache/)
+            File internalDir = new File(requireContext().getFilesDir(), "upload_cache");
+            if (!internalDir.exists()) {
+                internalDir.mkdirs();
+            }
+            File destFile = new File(internalDir, file.getName());
+
+            // Check if the file already exists locally. If so, return its path to avoid re-copying.
+            if (destFile.exists()) {
+                Log.d("FILE_COPY", "File already exists locally: " + destFile.getAbsolutePath());
+                return destFile.getAbsolutePath();
+            }
+
+            // 2. Perform the copy operation
+            try (
+                    ParcelFileDescriptor pfd = requireContext().getContentResolver().openFileDescriptor(file.getUri(), "r");
+                    FileInputStream inputStream = new FileInputStream(pfd.getFileDescriptor());
+                    FileOutputStream outputStream = new FileOutputStream(destFile)
+            ) {
+                // Buffer copy
+                byte[] buffer = new byte[4096];
+                int read;
+                while ((read = inputStream.read(buffer)) != -1) {
+                    outputStream.write(buffer, 0, read);
+                }
+                outputStream.flush();
+
+                Log.d("FILE_COPY", "Successfully copied " + file.getName() + " to " + destFile.getAbsolutePath());
+                return destFile.getAbsolutePath(); // Return the local path
+            }
+        } catch (IOException e) {
+            Log.e("FILE_COPY", "Error copying file " + file.getName(), e);
+            // If copying fails, we return null, and the file will be skipped.
+            return null;
+        } catch (SecurityException e) {
+            Log.e("FILE_COPY", "Security Exception during file copy (Permission issue): " + file.getName(), e);
+            return null;
+        }
+    }
+
+
+    /** Scans a single folder recursively. Videos are copied to internal storage and added to the shared externalVideos list. */
+    private void scanFolder(DocumentFile folder, List<VideoModel> externalVideos) {
         SimpleDateFormat sdf = new SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault());
 
         for (DocumentFile file : folder.listFiles()) {
             if (!isAdded()) return;
 
             if (file.isDirectory()) {
-                scanFolder(file, tempVideoList);
+                scanFolder(file, externalVideos);
             } else {
                 String name = file.getName() == null ? "" : file.getName().toLowerCase();
                 if (name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".avi")) {
 
+                    // --- NEW LOGIC: COPY FILE TO INTERNAL STORAGE ---
+                    String localFilePath = copyFileToInternalStorage(file);
+                    if (localFilePath == null) {
+                        Log.w("SAF_SCAN", "Skipping " + file.getName() + " due to copy failure.");
+                        continue; // Skip the file if copy failed
+                    }
+                    // --------------------------------------------------
+
                     long lastModified = file.lastModified();
                     String lastModifiedString = sdf.format(new Date(lastModified));
                     try {
-                        String currentStatus = "PENDING";
+
+                        // --- IMPROVEMENT: Load status from persistence first ---
+                        String currentStatus = loadVideoStatus(file.getName());
 
                         // Check server JSON array for uploaded status
                         for (int i = 0; i < jsonArrayCheck.length(); i++) {
                             JSONObject cv = jsonArrayCheck.getJSONObject(i);
-                            if (cv.getString("original_filename").equals(file.getName())) {
-                                currentStatus = "ALREADY UPLOADED"; // CORRECTED STATUS
+                            if (cv.getString("original_filename").equals(file.getName()) && cv.getString("file_size").equals(String.valueOf(file.length()))) {
+                                currentStatus = "ALREADY UPLOADED";
+                                // --- IMPROVEMENT: Persist final status ---
+                                saveVideoStatus(file.getName(), "ALREADY UPLOADED");
+                                // ------------------------------------------
                                 break;
                             }
                         }
 
-                        // Check if the video is currently in the local list and keep its status
-                        for (VideoModel existingVideo : videoList) {
-                            if (existingVideo.getName().equals(file.getName())) {
-                                // Prioritize ALREADY UPLOADED status if found in server list
-                                if (!"ALREADY UPLOADED".equals(currentStatus)) {
-                                    currentStatus = existingVideo.getStatus_upload();
-                                }
-                                break;
-                            }
-                        }
-
-                        tempVideoList.add(new VideoModel(
-                                file.getUri().toString(),
+                        externalVideos.add(new VideoModel(
+                                // *** CRITICAL CHANGE: Pass the localFilePath instead of file.getUri() ***
+                                localFilePath,
                                 file.getName(),
                                 lastModified,
                                 lastModifiedString,
@@ -611,7 +746,7 @@ public class HomeFragment extends Fragment implements
                 // 1. Unregister old observer if URI is now null
                 try {
                     requireContext().getContentResolver().unregisterContentObserver(fileChangeObserver);
-                    currentUsbUri = null;
+                    currentUsbUri = null; // FIX: Ensure currentUri is cleared after unregistration
                     Log.d("OBSERVER", "Unregistered observer.");
                 } catch (IllegalArgumentException e) {
                     Log.e("OBSERVER", "Observer was not registered/already unregistered.", e);
@@ -632,6 +767,158 @@ public class HomeFragment extends Fragment implements
             }
         });
     }
+
+    // =======================================================================
+    // --- LOGIC TO UPDATE INTERNAL QUEUE COUNT & FIND INTERNAL VIDEOS ---
+    // =======================================================================
+
+    /**
+     * Helper method to format file size into a human-readable string (e.g., 5.2 MB).
+     */
+    private String formatFileSize(long size) {
+        if (size <= 0) return "0B";
+        final String[] units = new String[] { "B", "KB", "MB", "GB", "TB" };
+        int digitGroups = (int) (Math.log10(size) / Math.log10(1024));
+        // Use Locale.getDefault() for better formatting
+        return new java.text.DecimalFormat("#,##0.#").format(size / Math.pow(1024, digitGroups)) + " " + units[digitGroups];
+    }
+
+    /**
+     * Scans the internal 'upload_cache' directory and creates VideoModel objects for
+     * files that are still pending upload, regardless of external storage availability.
+     */
+    private List<VideoModel> findInternalQueuedVideos() {
+        List<VideoModel> internalQueue = new ArrayList<>();
+        if (!isAdded()) return internalQueue;
+
+        File internalDir = new File(requireContext().getFilesDir(), "upload_cache");
+        if (!internalDir.exists()) {
+            return internalQueue;
+        }
+
+        File[] cachedFiles = internalDir.listFiles();
+        if (cachedFiles == null) return internalQueue;
+
+        SimpleDateFormat sdf = new SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault());
+
+        // Set of extensions to check (must match logic in scanFolder)
+        Set<String> videoExtensions = new HashSet<>();
+        videoExtensions.add(".mp4");
+        videoExtensions.add(".mkv");
+        videoExtensions.add(".avi");
+
+        for (File file : cachedFiles) {
+            String fileName = file.getName();
+            String fileNameLower = fileName.toLowerCase();
+
+            boolean isVideo = false;
+            for(String ext : videoExtensions) {
+                if(fileNameLower.endsWith(ext)) {
+                    isVideo = true;
+                    break;
+                }
+            }
+
+            if (file.isFile() && isVideo) {
+                String status = loadVideoStatus(fileName);
+
+                // Check if file is in a state that requires upload
+                if ("PENDING".equals(status) || "UPLOAD FAILED".equals(status) || "UPLOADING".equals(status)) {
+                    long lastModified = file.lastModified();
+                    String lastModifiedString = sdf.format(new Date(lastModified));
+
+                    // Create a VideoModel using the internal file path and stored status
+                    internalQueue.add(new VideoModel(
+                            file.getAbsolutePath(), // Path is the local internal path
+                            fileName,
+                            lastModified,
+                            lastModifiedString,
+                            CON_CAMERA, // Default camera name
+                            status
+                    ));
+                }
+            }
+        }
+        return internalQueue;
+    }
+
+
+    /**
+     * Scans the internal 'upload_cache' directory and updates the UI with the
+     * count of videos that are NOT marked as "ALREADY UPLOADED".
+     */
+    private void updateInternalQueueCount() {
+        if (!isAdded()) return;
+
+        new Thread(() -> {
+            try {
+                // Path to internal cache directory
+                File internalDir = new File(requireContext().getFilesDir(), "upload_cache");
+                if (!internalDir.exists()) {
+                    safeRunOnUiThread(() -> {
+                        if (tvQueueCount != null) {
+                            tvQueueCount.setText("Internal Queue: 0 videos (cache empty)");
+                        }
+                    });
+                    return;
+                }
+
+                File[] cachedFiles = internalDir.listFiles();
+                if (cachedFiles == null) return;
+
+                int internalQueueCount = 0;
+                long totalSize = 0;
+
+                // Set of extensions to check (must match logic in scanFolder)
+                Set<String> videoExtensions = new HashSet<>();
+                videoExtensions.add(".mp4");
+                videoExtensions.add(".mkv");
+                videoExtensions.add(".avi");
+
+                for (File file : cachedFiles) {
+                    String fileName = file.getName();
+                    String fileNameLower = fileName.toLowerCase();
+
+                    // Check if file is a video file
+                    boolean isVideo = false;
+                    for(String ext : videoExtensions) {
+                        if(fileNameLower.endsWith(ext)) {
+                            isVideo = true;
+                            break;
+                        }
+                    }
+
+                    if (file.isFile() && isVideo) {
+                        // Check the persisted status for the file
+                        String status = loadVideoStatus(fileName);
+
+                        // Only count files that are still considered part of the active queue (PENDING, FAILED, UPLOADING)
+                        if (!"ALREADY UPLOADED".equals(status)) {
+                            internalQueueCount++;
+                            totalSize += file.length();
+                        }
+                    }
+                }
+
+                final int finalCount = internalQueueCount;
+                final String sizeString = formatFileSize(totalSize);
+
+                safeRunOnUiThread(() -> {
+                    if (tvQueueCount != null) {
+                        tvQueueCount.setText("Internal Queue: " + finalCount + " videos (" + sizeString + ")");
+                    }
+                });
+
+            } catch (Exception e) {
+                Log.e("QUEUE_COUNT", "Error updating internal queue count", e);
+            }
+        }).start();
+    }
+
+    // =======================================================================
+    // --- END LOGIC ---
+    // =======================================================================
+
 
     @Override
     public void onDestroyView() {
