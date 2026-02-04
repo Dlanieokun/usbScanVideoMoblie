@@ -54,9 +54,9 @@ public class SettingFragment extends Fragment {
     private static final String PREF_NAME = "ProjectSettings";
     private static final String KEY_PROJECT_NAME = "selected_project_name";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-    private static final String KEY_CAMERA_1_ID = "camera1ID";
+    private static final String KEY_CAMERA_1_ID = "camera3ID";
     private static final String KEY_BASE_URL = "custom_base_url";
-    private static final String CON_CAMERA = "camera 1";
+    private static final String CON_CAMERA = "camera 3";
 
     private static final String APP_PREFS_FILE = "app_local_data";
     private static final String PROJECT_NAME_KEY = "name_of_project";

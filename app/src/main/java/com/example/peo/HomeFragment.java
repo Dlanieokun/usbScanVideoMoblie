@@ -13,7 +13,6 @@ import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.content.SharedPreferences;
-import android.database.Cursor;
 import android.os.Build;
 import android.Manifest;
 import android.content.pm.PackageManager;
@@ -29,11 +28,11 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import androidx.core.content.ContextCompat;
 
 import android.util.Log;
-import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -79,14 +78,15 @@ public class HomeFragment extends Fragment implements
     private static final String PROJECT_NAME_KEY = "name_of_project";
     private static final String PREFS_NAME_SETTINGS = "ProjectSettings";
     private static final String KEY_PROJECT_ID = "selected_project_id";
-    private static final String KEY_CAMERA_1_ID = "camera1ID";
+    private static final String KEY_CAMERA_1_ID = "camera3ID";
     private static final String KEY_BASE_URL = "custom_base_url";
-    private static final String CON_CAMERA = "camera 1";
+    private static final String CON_CAMERA = "camera 3";
     private static final String PREFS_QUEUE_STATUS = "video_queue_status";
     private static final String KEY_STATUS_PREFIX = "status_";
 
     private TextView tvStatus, tvProjectName, tvSelectedFolder, tvError, tvQueueCount, btnSeeMore;
     private Button btnRequestUsb;
+    private ImageButton btnResetQueue;
     private RecyclerView rvVideos;
     private SwipeRefreshLayout swipeRefreshLayout;
     private VideoAdapter videoAdapter;
@@ -112,7 +112,7 @@ public class HomeFragment extends Fragment implements
         requestNotificationPermissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(),
                 isGranted -> {
-                    if (!isGranted) Toast.makeText(requireContext(), "Notifications blocked.", Toast.LENGTH_SHORT).show();
+                    if (!isGranted) Toast.makeText(requireContext(), "Upload notifications blocked.", Toast.LENGTH_SHORT).show();
                     scanAllPersistedUris();
                 }
         );
@@ -136,9 +136,7 @@ public class HomeFragment extends Fragment implements
                             savePersistedUri(treeUri);
                             scanAllPersistedUris();
                         }
-                    } else {
-                        updateUiStatus("Storage access denied.", true);
-                    }
+                    } else { updateUiStatus("Storage access denied.", true); }
                 }
         );
     }
@@ -163,6 +161,7 @@ public class HomeFragment extends Fragment implements
         rvVideos = view.findViewById(R.id.rvVideos);
         swipeRefreshLayout = view.findViewById(R.id.swipeRefreshLayout);
         tvQueueCount = view.findViewById(R.id.tvQueueCount);
+        btnResetQueue = view.findViewById(R.id.btnResetQueue);
 
         rvVideos.setLayoutManager(new LinearLayoutManager(requireContext()));
         videoAdapter = new VideoAdapter(requireContext(), videoList);
@@ -171,10 +170,11 @@ public class HomeFragment extends Fragment implements
         btnRequestUsb = view.findViewById(R.id.btnRequestUsb);
         btnRequestUsb.setOnClickListener(v -> requestStorageAccess());
 
+        btnResetQueue.setOnClickListener(v -> confirmResetQueue());
+
         swipeRefreshLayout.setOnRefreshListener(() -> {
             if (isAdded()) {
-                currentBaseUrl = requireContext().getSharedPreferences(PREFS_NAME_SETTINGS, Context.MODE_PRIVATE)
-                        .getString(KEY_BASE_URL, currentBaseUrl);
+                currentBaseUrl = requireContext().getSharedPreferences(PREFS_NAME_SETTINGS, Context.MODE_PRIVATE).getString(KEY_BASE_URL, currentBaseUrl);
                 scanAllPersistedUris();
             }
         });
@@ -197,13 +197,9 @@ public class HomeFragment extends Fragment implements
             if (tvProjectName != null) {
                 tvProjectName.setText(fullText);
 
-                // Use .post to wait for the view to layout to measure actual height
+                // IMPORTANT: Wait for layout to measure line count
                 tvProjectName.post(() -> {
-                    // Convert 50dp to pixels
-                    int heightLimitPx = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 50, getResources().getDisplayMetrics());
-
-                    // Check if content exceeds 50dp or line count is > 2
-                    if (tvProjectName.getLineCount() > 2 || tvProjectName.getPaint().measureText(fullText) > (tvProjectName.getWidth() * 2)) {
+                    if (tvProjectName.getLineCount() > 2) {
                         btnSeeMore.setVisibility(View.VISIBLE);
                         btnSeeMore.setOnClickListener(v -> {
                             if (tvProjectName.getMaxLines() == 2) {
@@ -219,30 +215,47 @@ public class HomeFragment extends Fragment implements
                     }
                 });
             }
-            if (tvSelectedFolder != null) tvSelectedFolder.setText("\n"+CON_CAMERA+" Folder ID: " + camera1Id);
+            if (tvSelectedFolder != null) tvSelectedFolder.setText("\n" + CON_CAMERA + " Folder ID: " + camera1Id);
         });
     }
 
-    // --- SERVICE & SYNC METHODS ---
+    private void confirmResetQueue() {
+        new AlertDialog.Builder(requireContext())
+                .setTitle("Reset Internal Queue")
+                .setMessage("Delete all locally cached videos awaiting upload?")
+                .setPositiveButton("Reset", (dialog, which) -> resetInternalQueue())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void resetInternalQueue() {
+        new Thread(() -> {
+            File internalDir = new File(requireContext().getFilesDir(), "upload_cache");
+            if (internalDir.exists() && internalDir.isDirectory()) {
+                File[] files = internalDir.listFiles();
+                if (files != null) for (File f : files) f.delete();
+            }
+            requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE).edit().clear().apply();
+            safeRunOnUiThread(() -> {
+                Toast.makeText(requireContext(), "Queue reset.", Toast.LENGTH_SHORT).show();
+                scanAllPersistedUris();
+            });
+        }).start();
+    }
 
     private void bindUploadService() {
         Intent serviceIntent = new Intent(requireContext(), UploadService.class);
         requireContext().bindService(serviceIntent, this, Context.BIND_AUTO_CREATE);
     }
 
-    @Override
-    public void onServiceConnected(ComponentName name, IBinder service) {
+    @Override public void onServiceConnected(ComponentName name, IBinder service) {
         UploadService.UploadBinder binder = (UploadService.UploadBinder) service;
         uploadService = binder.getService();
         binder.setProgressListener(this);
         isBound = true;
     }
 
-    @Override
-    public void onServiceDisconnected(ComponentName name) {
-        uploadService = null;
-        isBound = false;
-    }
+    @Override public void onServiceDisconnected(ComponentName name) { uploadService = null; isBound = false; }
 
     @Override
     public void onProgressUpdate(String videoName, String newStatus) {
@@ -261,13 +274,7 @@ public class HomeFragment extends Fragment implements
         });
     }
 
-    @Override
-    public void onUploadFinished(String message) {
-        safeRunOnUiThread(() -> {
-            updateUiStatus(message, btnRequestUsb.getVisibility() == View.VISIBLE);
-            updateInternalQueueCount();
-        });
-    }
+    @Override public void onUploadFinished(String msg) { safeRunOnUiThread(() -> { updateUiStatus(msg, btnRequestUsb.getVisibility() == View.VISIBLE); updateInternalQueueCount(); }); }
 
     private void updateProjectAndFolderInfo() {
         if (!isAdded()) return;
@@ -280,51 +287,31 @@ public class HomeFragment extends Fragment implements
         else if (!getPersistedUris().isEmpty()) scanAllPersistedUris();
     }
 
-    private void navigateToSettingFragment() {
-        if (isAdded() && getActivity() instanceof MainActivity) {
-            ((MainActivity) requireActivity()).loadFragment(new SettingFragment());
-        }
-    }
+    private void navigateToSettingFragment() { if (isAdded() && getActivity() instanceof MainActivity) ((MainActivity) requireActivity()).loadFragment(new SettingFragment()); }
 
     private void savePersistedUri(Uri uri) {
         Set<String> uriSet = getPersistedUris();
         uriSet.add(uri.toString());
-        requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit().putStringSet(KEY_PERSISTED_URIS, uriSet).apply();
+        requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().putStringSet(KEY_PERSISTED_URIS, uriSet).apply();
     }
 
-    private Set<String> getPersistedUris() {
-        return new HashSet<>(requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getStringSet(KEY_PERSISTED_URIS, new HashSet<>()));
-    }
+    private Set<String> getPersistedUris() { return new HashSet<>(requireContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getStringSet(KEY_PERSISTED_URIS, new HashSet<>())); }
 
-    private void saveVideoStatus(String videoName, String status) {
-        if (!isAdded()) return;
-        requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
-                .edit().putString(KEY_STATUS_PREFIX + videoName, status).apply();
-    }
+    private void saveVideoStatus(String name, String status) { if (isAdded()) requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE).edit().putString(KEY_STATUS_PREFIX + name, status).apply(); }
 
-    private String loadVideoStatus(String videoName) {
-        if (!isAdded()) return "PENDING";
-        return requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
-                .getString(KEY_STATUS_PREFIX + videoName, "PENDING");
-    }
+    private String loadVideoStatus(String name) { if (!isAdded()) return "PENDING"; return requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE).getString(KEY_STATUS_PREFIX + name, "PENDING"); }
 
-    private void deleteInternalFile(String fileName) {
+    private void deleteInternalFile(String name) {
         if (!isAdded()) return;
         File internalDir = new File(requireContext().getFilesDir(), "upload_cache");
-        File fileToDelete = new File(internalDir, fileName);
-        if (fileToDelete.exists() && fileToDelete.delete()) {
-            requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE)
-                    .edit().remove(KEY_STATUS_PREFIX + fileName).apply();
+        File file = new File(internalDir, name);
+        if (file.exists() && file.delete()) {
+            requireContext().getSharedPreferences(PREFS_QUEUE_STATUS, Context.MODE_PRIVATE).edit().remove(KEY_STATUS_PREFIX + name).apply();
             updateInternalQueueCount();
         }
     }
 
-    private void checkExistingUris() {
-        if (!getPersistedUris().isEmpty()) updateUiStatus("Awaiting server history...", false);
-        else updateUiStatus("Select a folder to begin scanning.", true);
-    }
+    private void checkExistingUris() { if (!getPersistedUris().isEmpty()) updateUiStatus("Awaiting server history...", false); else updateUiStatus("Select a folder to begin scanning.", true); }
 
     private void requestStorageAccess() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -336,7 +323,6 @@ public class HomeFragment extends Fragment implements
         if (!isAdded()) return;
         updateUiStatus("Scanning storage devices...", false);
         safeRunOnUiThread(() -> swipeRefreshLayout.setRefreshing(true));
-
         List<VideoModel> externalVideos = new ArrayList<>();
         new Thread(() -> {
             Set<String> uriSet = getPersistedUris();
@@ -352,67 +338,52 @@ public class HomeFragment extends Fragment implements
                     }
                 } catch (SecurityException e) { Log.e("SAF_SCAN", "Permission issue", e); }
             }
-
             List<VideoModel> internalQueuedVideos = findInternalQueuedVideos();
             Map<String, VideoModel> uniqueVideosMap = new HashMap<>();
-            for (VideoModel video : externalVideos) uniqueVideosMap.put(video.getName(), video);
-            for (VideoModel video : internalQueuedVideos) {
-                if (!uniqueVideosMap.containsKey(video.getName())) uniqueVideosMap.put(video.getName(), video);
-            }
-
-            List<VideoModel> combinedVideoList = new ArrayList<>(uniqueVideosMap.values());
+            for (VideoModel v : externalVideos) uniqueVideosMap.put(v.getName(), v);
+            for (VideoModel v : internalQueuedVideos) if (!uniqueVideosMap.containsKey(v.getName())) uniqueVideosMap.put(v.getName(), v);
+            List<VideoModel> combined = new ArrayList<>(uniqueVideosMap.values());
             updateContentObserver(firstValidUri);
-            combinedVideoList.sort((v1, v2) -> Long.compare(v1.getLastModified(), v2.getLastModified()));
-
-            List<VideoModel> videosToUpload = new ArrayList<>();
-            for (VideoModel video : combinedVideoList) {
-                if (List.of("PENDING", "UPLOAD FAILED", "UPLOADING").contains(video.getStatus_upload())) videosToUpload.add(video);
-            }
-
+            combined.sort((v1, v2) -> Long.compare(v1.getLastModified(), v2.getLastModified()));
+            List<VideoModel> toUpload = new ArrayList<>();
+            for (VideoModel v : combined) if (List.of("PENDING", "UPLOAD FAILED", "UPLOADING").contains(v.getStatus_upload())) toUpload.add(v);
             safeRunOnUiThread(() -> {
-                videoList.clear();
-                videoList.addAll(combinedVideoList);
+                videoList.clear(); videoList.addAll(combined);
                 videoAdapter.notifyDataSetChanged();
                 swipeRefreshLayout.setRefreshing(false);
                 updateInternalQueueCount();
-                updateUiStatus("Scan completed.", uriSet.isEmpty() || combinedVideoList.isEmpty());
+                updateUiStatus("Scan completed.", uriSet.isEmpty() || combined.isEmpty());
                 updateProjectUIOnly();
-                if (!videosToUpload.isEmpty()) startUploadService(videosToUpload);
+                if (!toUpload.isEmpty()) startUploadService(toUpload);
             });
         }).start();
     }
 
-    private void startUploadService(List<VideoModel> videosToUpload) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
-                return;
-            }
-        }
-        doStartUploadService(videosToUpload);
-    }
-
-    private void doStartUploadService(List<VideoModel> videosToUpload) {
-        if (!isAdded() || videosToUpload.isEmpty()) return;
-        ArrayList<String> videoUris = new ArrayList<>();
-        ArrayList<String> videoNames = new ArrayList<>();
-        for (VideoModel video : videosToUpload) {
-            videoUris.add(video.getPath());
-            videoNames.add(video.getName());
-            video.setStatus_upload("UPLOADING");
-            saveVideoStatus(video.getName(), "UPLOADING");
+    private void doStartUploadService(List<VideoModel> toUpload) {
+        if (!isAdded() || toUpload.isEmpty()) return;
+        ArrayList<String> uris = new ArrayList<>();
+        ArrayList<String> names = new ArrayList<>();
+        for (VideoModel v : toUpload) {
+            uris.add(v.getPath()); names.add(v.getName());
+            v.setStatus_upload("UPLOADING"); saveVideoStatus(v.getName(), "UPLOADING");
         }
         videoAdapter.notifyDataSetChanged();
-
         Intent serviceIntent = new Intent(requireContext(), UploadService.class);
-        serviceIntent.putStringArrayListExtra(UploadService.EXTRA_VIDEO_URIS, videoUris);
-        serviceIntent.putStringArrayListExtra(UploadService.EXTRA_VIDEO_NAMES, videoNames);
+        serviceIntent.putStringArrayListExtra(UploadService.EXTRA_VIDEO_URIS, uris);
+        serviceIntent.putStringArrayListExtra(UploadService.EXTRA_VIDEO_NAMES, names);
         serviceIntent.putExtra(UploadService.EXTRA_PROJECT_ID, projectId);
         serviceIntent.putExtra(UploadService.EXTRA_CAMERA_ID, camera1Id);
         serviceIntent.putExtra("EXTRA_BASE_URL", currentBaseUrl);
-
         requireActivity().startService(serviceIntent);
         if (!isBound) bindUploadService();
+    }
+
+    private void startUploadService(List<VideoModel> toUpload) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS);
+            return;
+        }
+        doStartUploadService(toUpload);
     }
 
     private String copyFileToInternalStorage(DocumentFile file) {
@@ -422,7 +393,6 @@ public class HomeFragment extends Fragment implements
             if (!internalDir.exists()) internalDir.mkdirs();
             File destFile = new File(internalDir, file.getName());
             if (destFile.exists()) return destFile.getAbsolutePath();
-
             try (ParcelFileDescriptor pfd = requireContext().getContentResolver().openFileDescriptor(file.getUri(), "r");
                  FileInputStream in = new FileInputStream(pfd.getFileDescriptor());
                  FileOutputStream out = new FileOutputStream(destFile)) {
@@ -450,10 +420,8 @@ public class HomeFragment extends Fragment implements
                         for (int i = 0; i < jsonArrayCheck.length(); i++) {
                             JSONObject cv = jsonArrayCheck.getJSONObject(i);
                             if (cv.getString("original_filename").equals(file.getName()) && cv.optLong("file_size") == size) {
-                                status = "ALREADY UPLOADED";
-                                saveVideoStatus(file.getName(), "ALREADY UPLOADED");
-                                deleteInternalFile(file.getName());
-                                break;
+                                status = "ALREADY UPLOADED"; saveVideoStatus(file.getName(), "ALREADY UPLOADED");
+                                deleteInternalFile(file.getName()); break;
                             }
                         }
                     } catch (JSONException e) { Log.e("JSON", "Parse error", e); }
@@ -473,16 +441,11 @@ public class HomeFragment extends Fragment implements
         });
     }
 
-    private void updateUiStatus(String msg, boolean showButton) {
-        safeRunOnUiThread(() -> {
-            if (tvStatus != null) tvStatus.setText(msg);
-            if (btnRequestUsb != null) btnRequestUsb.setVisibility(showButton ? View.VISIBLE : View.GONE);
-        });
-    }
+    private void updateUiStatus(String msg, boolean showButton) { safeRunOnUiThread(() -> { if (tvStatus != null) tvStatus.setText(msg); if (btnRequestUsb != null) btnRequestUsb.setVisibility(showButton ? View.VISIBLE : View.GONE); }); }
 
     private String formatFileSize(long size) {
         if (size <= 0) return "0B";
-        final String[] units = new String[] { "B", "KB", "MB", "GB", "TB" };
+        final String[] units = {"B", "KB", "MB", "GB", "TB"};
         int digitGroups = (int) (Math.log10(size) / Math.log10(1024));
         return new java.text.DecimalFormat("#,##0.#").format(size / Math.pow(1024, digitGroups)) + " " + units[digitGroups];
     }
@@ -495,9 +458,7 @@ public class HomeFragment extends Fragment implements
         SimpleDateFormat sdf = new SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault());
         for (File f : files) {
             String status = loadVideoStatus(f.getName());
-            if (List.of("PENDING", "UPLOAD FAILED", "UPLOADING").contains(status)) {
-                queue.add(new VideoModel(f.getAbsolutePath(), f.getName(), f.lastModified(), sdf.format(new Date(f.lastModified())), CON_CAMERA, status));
-            }
+            if (List.of("PENDING", "UPLOAD FAILED", "UPLOADING").contains(status)) queue.add(new VideoModel(f.getAbsolutePath(), f.getName(), f.lastModified(), sdf.format(new Date(f.lastModified())), CON_CAMERA, status));
         }
         return queue;
     }
@@ -511,9 +472,7 @@ public class HomeFragment extends Fragment implements
             if (files != null) {
                 for (File f : files) {
                     String status = loadVideoStatus(f.getName());
-                    if (!"ALREADY UPLOADED".equals(status) && !"SUCCESSFULLY UPLOAD".equals(status)) {
-                        count++; size += f.length();
-                    }
+                    if (!"ALREADY UPLOADED".equals(status) && !"SUCCESSFULLY UPLOAD".equals(status)) { count++; size += f.length(); }
                 }
             }
             final int fCount = count; final String fSize = formatFileSize(size);
@@ -521,8 +480,7 @@ public class HomeFragment extends Fragment implements
         }).start();
     }
 
-    @Override
-    public void onDestroyView() {
+    @Override public void onDestroyView() {
         super.onDestroyView();
         if (isAdded()) {
             client.dispatcher().cancelAll();
@@ -535,28 +493,15 @@ public class HomeFragment extends Fragment implements
         if (!isAdded()) return;
         String finalUrl = Uri.parse(currentBaseUrl + (url.startsWith("/") ? url.substring(1) : url)).toString();
         RequestBody body = new FormBody.Builder().add("project_id", vId).build();
-        Request request = new Request.Builder().url(finalUrl).post(body).build();
-        client.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                safeRunOnUiThread(() -> {
-                    if (swipeRefreshLayout != null) swipeRefreshLayout.setRefreshing(false);
-                    scanAllPersistedUris();
-                });
-            }
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                try (ResponseBody b = response.body()) {
-                    if (response.isSuccessful() && b != null) {
-                        jsonArrayCheck = new JSONArray(b.string());
-                        scanAllPersistedUris();
-                    }
-                } catch (Exception e) { scanAllPersistedUris(); }
+        Request req = new Request.Builder().url(finalUrl).post(body).build();
+        client.newCall(req).enqueue(new Callback() {
+            @Override public void onFailure(Call call, IOException e) { safeRunOnUiThread(() -> { if (swipeRefreshLayout != null) swipeRefreshLayout.setRefreshing(false); scanAllPersistedUris(); }); }
+            @Override public void onResponse(Call call, Response res) throws IOException {
+                try (ResponseBody b = res.body()) { if (res.isSuccessful() && b != null) { jsonArrayCheck = new JSONArray(b.string()); scanAllPersistedUris(); } }
+                catch (Exception e) { scanAllPersistedUris(); }
             }
         });
     }
 
-    private void safeRunOnUiThread(Runnable action) {
-        if (isAdded()) requireActivity().runOnUiThread(action);
-    }
+    private void safeRunOnUiThread(Runnable action) { if (isAdded()) requireActivity().runOnUiThread(action); }
 }
